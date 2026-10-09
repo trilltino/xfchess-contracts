@@ -1,0 +1,142 @@
+use crate::constants::MAX_SESSION_DURATION_SECS;
+use crate::errors::GameErrorCode;
+use crate::state::PlayerSession;
+use anchor_lang::prelude::*;
+
+#[derive(Accounts)]
+#[instruction(session_key: Pubkey)]
+pub struct CreateSession<'info> {
+    #[account(mut)]
+    pub player: Signer<'info>,
+    #[account(
+        init,
+        payer = player,
+        space = 8 + PlayerSession::INIT_SPACE,
+        seeds = [PlayerSession::SEED, player.key().as_ref(), session_key.as_ref()],
+        bump,
+    )]
+    pub session: Account<'info, PlayerSession>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handler_create_session(
+    ctx: Context<CreateSession>,
+    session_key: Pubkey,
+    duration: Option<i64>,
+    spending_limit: Option<u64>,
+    max_wager: Option<u64>,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let s = &mut ctx.accounts.session;
+    s.player = ctx.accounts.player.key();
+    s.session_key = session_key;
+    let duration_secs = duration.unwrap_or(PlayerSession::DEFAULT_DURATION);
+    require!(duration_secs > 0, GameErrorCode::InvalidArgument);
+    require!(
+        duration_secs <= MAX_SESSION_DURATION_SECS,
+        GameErrorCode::DurationTooLarge
+    );
+    s.expires_at = now
+        .checked_add(duration_secs)
+        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+    s.spending_limit = spending_limit.unwrap_or(PlayerSession::DEFAULT_SPENDING_LIMIT);
+    s.max_wager = max_wager.unwrap_or(PlayerSession::MAX_WAGER_DEFAULT);
+    s.total_spent = 0;
+    s.games_played = 0;
+    s.can_create_games = true;
+    s.can_join_games = true;
+    s.can_claim_prizes = true;
+    s.is_active = true;
+    s.bump = ctx.bumps.session;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct RevokeSession<'info> {
+    #[account(mut)]
+    pub player: Signer<'info>,
+    #[account(
+        mut,
+        close = player,
+        has_one = player,
+        seeds = [PlayerSession::SEED, player.key().as_ref(), session.session_key.as_ref()],
+        bump = session.bump,
+    )]
+    pub session: Account<'info, PlayerSession>,
+}
+
+pub fn handler_revoke_session(ctx: Context<RevokeSession>) -> Result<()> {
+    ctx.accounts.session.is_active = false;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct UpdateElo<'info> {
+    #[account(address = crate::constants::vps_authority::ID @ GameErrorCode::UnauthorizedAccess)]
+    pub authority: Signer<'info>,
+    #[account(mut)]
+    pub profile: Account<'info, crate::state::PlayerProfile>,
+}
+
+pub fn handler_update_elo(
+    ctx: Context<UpdateElo>,
+    _opponent_rating: u32,
+    _opponent_rd: u32,
+    outcome: u32, // 10000=win, 5000=draw, 0=loss
+    is_ranked: bool,
+    wager: u64,
+    won_amount: u64,
+) -> Result<()> {
+    let p = &mut ctx.accounts.profile;
+
+    match outcome {
+        10000 => {
+            p.wins = p
+                .wins
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            p.win_streak = p
+                .win_streak
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            if p.win_streak > p.best_streak {
+                p.best_streak = p.win_streak;
+            }
+        }
+        0 => {
+            p.losses = p
+                .losses
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            p.win_streak = 0;
+        }
+        _ => {
+            p.draws = p
+                .draws
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            p.win_streak = 0;
+        }
+    }
+    p.games_played = p
+        .games_played
+        .checked_add(1)
+        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+    p.last_game_at = Clock::get()?.unix_timestamp;
+
+    if is_ranked {
+        p.ranked_games = p
+            .ranked_games
+            .checked_add(1)
+            .ok_or(GameErrorCode::ArithmeticOverflow)?;
+        p.total_wagered = p
+            .total_wagered
+            .checked_add(wager)
+            .ok_or(GameErrorCode::ArithmeticOverflow)?;
+        p.total_won = p
+            .total_won
+            .checked_add(won_amount)
+            .ok_or(GameErrorCode::ArithmeticOverflow)?;
+    }
+    Ok(())
+}

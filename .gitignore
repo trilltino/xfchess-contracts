@@ -1,0 +1,4 @@
+/target
+**/*-keypair.json
+keys/*.json
+.env

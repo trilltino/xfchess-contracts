@@ -1,0 +1,136 @@
+use crate::account_ix::session_guards;
+use crate::common::escrow::debit_program_pda;
+use crate::constants::*;
+use crate::errors::*;
+use crate::state::*;
+use anchor_lang::prelude::*;
+
+#[derive(Accounts)]
+#[instruction(tournament_id: u64, game_id: u64)]
+pub struct SessionJoinGame<'info> {
+    #[account(
+        seeds = [b"tournament", tournament_id.to_le_bytes().as_ref()],
+        bump = tournament.bump,
+    )]
+    pub tournament: Box<Account<'info, Tournament>>,
+
+    #[account(
+        seeds = [TOURNAMENT_PLAYERS_SEED, &[0u8], &tournament_id.to_le_bytes()],
+        bump
+    )]
+    pub tournament_players_shard_0: Box<Account<'info, TournamentPlayersShard>>,
+    #[account(
+        seeds = [TOURNAMENT_PLAYERS_SEED, &[1u8], &tournament_id.to_le_bytes()],
+        bump
+    )]
+    pub tournament_players_shard_1: Option<Box<Account<'info, TournamentPlayersShard>>>,
+    #[account(
+        seeds = [TOURNAMENT_PLAYERS_SEED, &[2u8], &tournament_id.to_le_bytes()],
+        bump
+    )]
+    pub tournament_players_shard_2: Option<Box<Account<'info, TournamentPlayersShard>>>,
+    #[account(
+        seeds = [TOURNAMENT_PLAYERS_SEED, &[3u8], &tournament_id.to_le_bytes()],
+        bump
+    )]
+    pub tournament_players_shard_3: Option<Box<Account<'info, TournamentPlayersShard>>>,
+
+    #[account(
+        mut,
+        seeds = [
+            TournamentSessionDelegation::SEED,
+            tournament_id.to_le_bytes().as_ref(),
+            player.key().as_ref(),
+        ],
+        bump = session_delegation.bump,
+        constraint = session_delegation.enabled @ XfchessGameError::SessionNotAuthorized,
+        constraint = session_delegation.player == player.key() @ XfchessGameError::UnauthorizedAccess,
+        constraint = session_delegation.session_key == session_signer.key() @ XfchessGameError::InvalidSessionKey,
+    )]
+    pub session_delegation: Box<Account<'info, TournamentSessionDelegation>>,
+
+    pub session_signer: Signer<'info>,
+
+    #[account(
+        constraint = {
+            tournament_players_shard_0.players.iter().any(|p| *p == player.key())
+                || tournament_players_shard_1.as_ref().is_some_and(|s| s.players.iter().any(|p| *p == player.key()))
+                || tournament_players_shard_2.as_ref().is_some_and(|s| s.players.iter().any(|p| *p == player.key()))
+                || tournament_players_shard_3.as_ref().is_some_and(|s| s.players.iter().any(|p| *p == player.key()))
+        } @ XfchessGameError::UnauthorizedAccess,
+    )]
+    pub player: UncheckedAccount<'info>,
+
+    #[account(mut, seeds = [GAME_SEED, &game_id.to_le_bytes()], bump)]
+    pub game: Box<Account<'info, Game>>,
+
+    #[account(mut, seeds = [WAGER_ESCROW_SEED, &game_id.to_le_bytes()], bump)]
+    pub escrow_pda: UncheckedAccount<'info>,
+
+    #[account(seeds = [PROFILE_SEED, game.white.as_ref()], bump)]
+    pub white_profile: Box<Account<'info, PlayerProfile>>,
+
+    #[account(seeds = [PROFILE_SEED, player.key().as_ref()], bump)]
+    pub player_profile: Box<Account<'info, PlayerProfile>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handler(ctx: Context<SessionJoinGame>, _tournament_id: u64, _game_id: u64) -> Result<()> {
+    let delegation = &mut ctx.accounts.session_delegation;
+    let game = &mut ctx.accounts.game;
+    let player_key = ctx.accounts.player.key();
+
+    let now = Clock::get()?.unix_timestamp;
+    require!(delegation.is_valid(now), XfchessGameError::SessionExpired);
+    require!(
+        delegation.session_key == ctx.accounts.session_signer.key(),
+        XfchessGameError::SessionNotAuthorized
+    );
+
+    require!(
+        game.game_type == GameType::PvP,
+        GameErrorCode::GameAlreadyFull
+    );
+    require!(
+        game.status == GameStatus::WaitingForOpponent,
+        GameErrorCode::GameAlreadyFull
+    );
+    require!(game.white != player_key, GameErrorCode::CannotPlaySelf);
+
+    let final_fee = game.country_fee;
+
+    let total_cost = game
+        .wager_amount
+        .checked_add(final_fee)
+        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+
+    require!(
+        game.wager_amount <= delegation.max_wager,
+        XfchessGameError::WagerLimitExceeded
+    );
+    require!(
+        session_guards::checked_session_total(delegation.total_spent, total_cost)?
+            <= delegation.spending_limit,
+        XfchessGameError::SessionSpendingLimitExceeded
+    );
+
+    game.black = player_key;
+    game.status = GameStatus::Active;
+    game.updated_at = Clock::get()?.unix_timestamp;
+    game.country_fee = final_fee;
+
+    if game.wager_token.is_none() {
+        debit_program_pda(
+            &delegation.to_account_info(),
+            &ctx.accounts.escrow_pda.to_account_info(),
+            game.wager_amount,
+        )?;
+    }
+
+    delegation.total_spent =
+        session_guards::checked_session_total(delegation.total_spent, total_cost)?;
+    delegation.games_played = delegation.games_played.saturating_add(1);
+
+    Ok(())
+}

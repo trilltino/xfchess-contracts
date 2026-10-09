@@ -1,0 +1,183 @@
+use anchor_lang::prelude::*;
+
+#[account]
+#[derive(InitSpace)]
+pub struct Game {
+    pub game_id: u64,
+    pub white: Pubkey,
+    pub black: Pubkey,
+    pub status: GameStatus,
+    pub last_move_timestamp: i64,
+    pub fees_advanced: u64,
+    pub fee_payer: Pubkey,
+    pub result: GameResult,
+    pub board_state: [u8; 68],
+    pub move_count: u16,
+    pub halfmove_clock: u16,
+    pub turn: u16,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub wager_amount: u64,
+    pub wager_token: Option<Pubkey>,
+    pub game_type: GameType,
+    pub match_type: MatchType,
+    pub country_fee: u64,
+    pub base_time_seconds: u64,
+    pub increment_seconds: u16,
+    pub bump: u8,
+    pub is_delegated: bool,
+    pub tournament_id: Option<u64>,
+    pub nonce: u64,
+    pub draw_offered_by: Option<Pubkey>,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct SessionDelegation {
+    pub game_id: u64,
+    pub player: Pubkey,
+    pub session_key: Pubkey,
+    pub expires_at: i64,
+    pub max_batch_len: u16,
+    pub enabled: bool,
+    pub bump: u8,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
+pub enum GameStatus {
+    Pending,
+    WaitingForOpponent,
+    Active,
+    Inactive,
+    Disputed,
+    Finished,
+    Settled,
+    Expired,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GamePhase {
+    WaitingBase,
+    ActiveBase,
+    ActiveEr,
+    FinishedEr,
+    FinishedBase,
+    Settled,
+    Cancelled,
+    Disputed,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
+pub enum GameResult {
+    None,
+    Winner(Pubkey),
+    Draw,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
+pub enum GameType {
+    PvP,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
+pub enum MatchType {
+    Free,
+    Rated,
+}
+
+impl Game {
+    pub fn phase(&self) -> Result<GamePhase> {
+        match (self.status, self.is_delegated) {
+            (GameStatus::WaitingForOpponent, false) => Ok(GamePhase::WaitingBase),
+            (GameStatus::Active, false) => Ok(GamePhase::ActiveBase),
+            (GameStatus::Active, true) => Ok(GamePhase::ActiveEr),
+            (GameStatus::Finished, true) => Ok(GamePhase::FinishedEr),
+            (GameStatus::Finished, false) => Ok(GamePhase::FinishedBase),
+            (GameStatus::Settled, false) => Ok(GamePhase::Settled),
+            (GameStatus::Cancelled, false) => Ok(GamePhase::Cancelled),
+            (GameStatus::Disputed, _) => Ok(GamePhase::Disputed),
+            _ => err!(crate::errors::GameErrorCode::InvalidLifecycleTransition),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wager_amount_offset_is_212() {
+        let mut g = game(GameStatus::WaitingForOpponent, false);
+        g.wager_amount = 0;
+        let bytes = borsh::to_vec(&g).unwrap();
+        g.wager_amount = 0x1122334455667788;
+        let bytes2 = borsh::to_vec(&g).unwrap();
+        let diff_pos = bytes
+            .iter()
+            .zip(bytes2.iter())
+            .position(|(a, b)| a != b)
+            .unwrap();
+        assert_eq!(diff_pos, 212);
+    }
+
+    fn game(status: GameStatus, is_delegated: bool) -> Game {
+        Game {
+            game_id: 1,
+            white: Pubkey::new_unique(),
+            black: Pubkey::new_unique(),
+            status,
+            last_move_timestamp: 0,
+            fees_advanced: 0,
+            fee_payer: Pubkey::new_unique(),
+            result: GameResult::None,
+            board_state: [0; 68],
+            move_count: 0,
+            halfmove_clock: 0,
+            turn: 1,
+            created_at: 0,
+            updated_at: 0,
+            wager_amount: 0,
+            wager_token: None,
+            game_type: GameType::PvP,
+            match_type: MatchType::Free,
+            country_fee: 0,
+            base_time_seconds: 0,
+            increment_seconds: 0,
+            bump: 0,
+            is_delegated,
+            tournament_id: None,
+            nonce: 0,
+            draw_offered_by: None,
+        }
+    }
+
+    #[test]
+    fn derives_base_and_er_phases() {
+        assert_eq!(
+            game(GameStatus::WaitingForOpponent, false).phase().unwrap(),
+            GamePhase::WaitingBase
+        );
+        assert_eq!(
+            game(GameStatus::Active, false).phase().unwrap(),
+            GamePhase::ActiveBase
+        );
+        assert_eq!(
+            game(GameStatus::Active, true).phase().unwrap(),
+            GamePhase::ActiveEr
+        );
+        assert_eq!(
+            game(GameStatus::Finished, true).phase().unwrap(),
+            GamePhase::FinishedEr
+        );
+        assert_eq!(
+            game(GameStatus::Finished, false).phase().unwrap(),
+            GamePhase::FinishedBase
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_delegated_waiting_phase() {
+        assert!(game(GameStatus::WaitingForOpponent, true).phase().is_err());
+    }
+}

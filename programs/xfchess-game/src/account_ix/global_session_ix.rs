@@ -1,0 +1,139 @@
+use crate::constants::MAX_SESSION_DURATION_SECS;
+use crate::errors::XfchessGameError;
+use crate::state::GlobalSessionDelegation;
+use anchor_lang::prelude::*;
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+pub struct AuthorizeGlobalSessionArgs {
+    pub session_key: Pubkey,
+    pub duration_secs: Option<i64>,
+    pub spending_limit: Option<u64>,
+    pub max_wager: Option<u64>,
+    pub games: Option<u16>,
+    pub deposit_lamports: u64,
+}
+
+pub fn handler_authorize_global_session(
+    ctx: Context<AuthorizeGlobalSessionCtx>,
+    args: AuthorizeGlobalSessionArgs,
+) -> Result<()> {
+    let delegation = &mut ctx.accounts.session_delegation;
+    let player = &ctx.accounts.player;
+
+    let now = Clock::get()?.unix_timestamp;
+    if delegation.enabled && now < delegation.expires_at && delegation.games_remaining > 0 {
+        require!(
+            delegation.player == Pubkey::default(),
+            XfchessGameError::GlobalSessionAlreadyActive
+        );
+    }
+
+    if args.deposit_lamports > 0 {
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                System::id(),
+                anchor_lang::system_program::Transfer {
+                    from: player.to_account_info(),
+                    to: delegation.to_account_info(),
+                },
+            ),
+            args.deposit_lamports,
+        )?;
+    }
+
+    let duration = args
+        .duration_secs
+        .unwrap_or(GlobalSessionDelegation::DEFAULT_DURATION);
+    require!(duration > 0, XfchessGameError::UnauthorizedAccess);
+    require!(
+        duration <= MAX_SESSION_DURATION_SECS,
+        XfchessGameError::DurationTooLarge
+    );
+    let expires_at = now
+        .checked_add(duration)
+        .ok_or(XfchessGameError::MathOverflow)?;
+
+    delegation.player = player.key();
+    delegation.session_key = args.session_key;
+    delegation.expires_at = expires_at;
+    delegation.spending_limit = args
+        .spending_limit
+        .unwrap_or(GlobalSessionDelegation::DEFAULT_SPENDING_LIMIT);
+    delegation.total_spent = 0;
+    delegation.max_wager = args
+        .max_wager
+        .unwrap_or(GlobalSessionDelegation::DEFAULT_MAX_WAGER);
+    delegation.games_remaining = args.games.unwrap_or(GlobalSessionDelegation::DEFAULT_GAMES);
+    delegation.enabled = true;
+    delegation.bump = ctx.bumps.session_delegation;
+
+    Ok(())
+}
+
+pub fn handler_revoke_global_session(ctx: Context<RevokeGlobalSessionCtx>) -> Result<()> {
+    let delegation = &mut ctx.accounts.session_delegation;
+    let player = &ctx.accounts.player;
+
+    require_keys_eq!(
+        delegation.player,
+        player.key(),
+        XfchessGameError::UnauthorizedAccess
+    );
+
+    delegation.enabled = false;
+    delegation.expires_at = Clock::get()?.unix_timestamp;
+    Ok(())
+}
+
+pub fn handler_withdraw_global_session(ctx: Context<WithdrawGlobalSessionCtx>) -> Result<()> {
+    let delegation_info = ctx.accounts.session_delegation.to_account_info();
+    let player_info = ctx.accounts.player.to_account_info();
+    let rent_min = Rent::get()?.minimum_balance(delegation_info.data_len());
+    let withdrawable = delegation_info.lamports().saturating_sub(rent_min);
+    crate::common::escrow::debit_program_pda(&delegation_info, &player_info, withdrawable)?;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct AuthorizeGlobalSessionCtx<'info> {
+    #[account(
+        init_if_needed,
+        payer = player,
+        seeds = [GlobalSessionDelegation::SEED, player.key().as_ref()],
+        bump,
+        space = 8 + GlobalSessionDelegation::INIT_SPACE,
+    )]
+    pub session_delegation: Account<'info, GlobalSessionDelegation>,
+
+    #[account(mut)]
+    pub player: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RevokeGlobalSessionCtx<'info> {
+    #[account(
+        mut,
+        seeds = [GlobalSessionDelegation::SEED, player.key().as_ref()],
+        bump = session_delegation.bump,
+    )]
+    pub session_delegation: Account<'info, GlobalSessionDelegation>,
+
+    #[account(mut)]
+    pub player: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawGlobalSessionCtx<'info> {
+    #[account(
+        mut,
+        seeds = [GlobalSessionDelegation::SEED, player.key().as_ref()],
+        bump = session_delegation.bump,
+        constraint = session_delegation.player == player.key() @ XfchessGameError::UnauthorizedAccess,
+    )]
+    pub session_delegation: Account<'info, GlobalSessionDelegation>,
+
+    #[account(mut)]
+    pub player: Signer<'info>,
+}

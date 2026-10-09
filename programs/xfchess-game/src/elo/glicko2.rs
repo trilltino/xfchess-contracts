@@ -1,0 +1,42 @@
+const K_SCALED: f64 = 3200.0;
+const DIVISOR: f64 = 40000.0;
+const ELO_FLOOR: f64 = 10000.0;
+
+pub fn calculate_elo_update(white_rating: f64, black_rating: f64, sa: f64) -> (f64, f64) {
+    let ea = 1.0 / (1.0 + 10.0_f64.powf((black_rating - white_rating) / DIVISOR));
+    let sb = 1.0 - sa;
+    let eb = 1.0 - ea;
+    let new_white = (white_rating + K_SCALED * (sa - ea)).max(ELO_FLOOR);
+    let new_black = (black_rating + K_SCALED * (sb - eb)).max(ELO_FLOOR);
+    (new_white, new_black)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equal_players_win_increases_rating() {
+        let (w, b) = calculate_elo_update(120000.0, 120000.0, 1.0);
+        assert!(w > 120000.0);
+        assert!(b < 120000.0);
+        assert!(
+            (w - 121600.0).abs() < 1.0,
+            "expected +1600 centiscale (+16 Elo): got {}",
+            w
+        );
+    }
+
+    #[test]
+    fn draw_between_equal_players_unchanged() {
+        let (w, b) = calculate_elo_update(120000.0, 120000.0, 0.5);
+        assert!((w - 120000.0).abs() < 1.0);
+        assert!((b - 120000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn floor_prevents_negative_ratings() {
+        let (_, b) = calculate_elo_update(200000.0, 10000.0, 1.0);
+        assert!(b >= ELO_FLOOR);
+    }
+}

@@ -1,0 +1,431 @@
+use crate::common::escrow;
+use crate::constants::*;
+use crate::elo::glicko2::calculate_elo_update;
+use crate::elo::rating::{bucket_for_time_control, rating_field_mut};
+use crate::errors::GameErrorCode;
+use crate::game_ix::finalize::EndGame;
+use crate::lifecycle::guards;
+use crate::state::*;
+use anchor_lang::prelude::*;
+
+#[event]
+pub struct GameFinalized {
+    pub game_id: u64,
+    pub white: Pubkey,
+    pub black: Pubkey,
+    pub winner: Pubkey,
+    pub result_code: u8,
+    pub wager_amount: u64,
+    pub country_fee: u64,
+    pub fees_advanced: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct GameCancelledSettlement {
+    pub game_id: u64,
+    pub white: Pubkey,
+    pub black: Pubkey,
+    pub wager_amount: u64,
+    pub refunded_white: bool,
+    pub refunded_black: bool,
+    pub timestamp: i64,
+}
+
+fn result_code(result: GameResult) -> u8 {
+    match result {
+        GameResult::None => 0,
+        GameResult::Draw => 1,
+        GameResult::Winner(_) => 2,
+    }
+}
+
+pub fn settle_finished_game(ctx: Context<EndGame>, game_id: u64) -> Result<()> {
+    let (result, wager_amount, game_white, wager_token, match_type, country_fee, fees_advanced) = {
+        let game = &mut ctx.accounts.game;
+        require!(
+            game.status == GameStatus::Finished,
+            GameErrorCode::GameNotFinished
+        );
+        guards::require_undelegated(game)?;
+        require!(
+            game.result != GameResult::None,
+            GameErrorCode::GameStillInProgress
+        );
+
+        game.status = GameStatus::Settled;
+        (
+            game.result,
+            game.wager_amount,
+            game.white,
+            game.wager_token,
+            game.match_type,
+            game.country_fee,
+            game.fees_advanced,
+        )
+    };
+    let bump = ctx.bumps.escrow_pda;
+
+    let escrow_balance = ctx.accounts.escrow_pda.lamports();
+    let pot = escrow::pot(wager_amount)?;
+
+    if wager_amount > 0 && wager_token.is_none() && escrow_balance >= pot {
+        let sp = &ctx.accounts.system_program;
+        let escrow = &ctx.accounts.escrow_pda;
+        let mut remaining = pot;
+
+        let tx_fee = 10_000u64.min(remaining);
+        escrow::pay_from_game_escrow(
+            sp,
+            escrow,
+            ctx.accounts.fee_payer.as_ref(),
+            tx_fee,
+            game_id,
+            bump,
+        )?;
+        remaining = remaining.saturating_sub(tx_fee);
+
+        let platform_reimbursement = fees_advanced.min(remaining);
+        escrow::pay_from_game_escrow(
+            sp,
+            escrow,
+            ctx.accounts.treasury_vault.as_ref(),
+            platform_reimbursement,
+            game_id,
+            bump,
+        )?;
+        remaining = remaining.saturating_sub(platform_reimbursement);
+
+        if match_type != MatchType::Free {
+            let cfee = country_fee.min(remaining);
+            escrow::pay_from_game_escrow(
+                sp,
+                escrow,
+                ctx.accounts.treasury_vault.as_ref(),
+                cfee,
+                game_id,
+                bump,
+            )?;
+            remaining = remaining.saturating_sub(cfee);
+
+            let per_player = (ELO_FEE_LAMPORTS / 2).min(remaining / 2);
+            escrow::pay_from_game_escrow(
+                sp,
+                escrow,
+                ctx.accounts.white_authority.as_ref(),
+                per_player,
+                game_id,
+                bump,
+            )?;
+            escrow::pay_from_game_escrow(
+                sp,
+                escrow,
+                ctx.accounts.black_authority.as_ref(),
+                per_player,
+                game_id,
+                bump,
+            )?;
+            remaining = remaining.saturating_sub(per_player.saturating_mul(2));
+        }
+
+        match result {
+            GameResult::Winner(winner) => {
+                let dest = if winner == game_white {
+                    ctx.accounts.white_authority.as_ref()
+                } else {
+                    ctx.accounts.black_authority.as_ref()
+                };
+                escrow::require_rent_exempt_after(dest, remaining)?;
+                escrow::pay_from_game_escrow(sp, escrow, dest, remaining, game_id, bump)?;
+            }
+            GameResult::Draw => {
+                let (white_share, black_share) = split_draw_remaining(remaining);
+                escrow::require_rent_exempt_after(
+                    ctx.accounts.white_authority.as_ref(),
+                    white_share,
+                )?;
+                escrow::require_rent_exempt_after(
+                    ctx.accounts.black_authority.as_ref(),
+                    black_share,
+                )?;
+                escrow::pay_from_game_escrow(
+                    sp,
+                    escrow,
+                    ctx.accounts.white_authority.as_ref(),
+                    white_share,
+                    game_id,
+                    bump,
+                )?;
+                escrow::pay_from_game_escrow(
+                    sp,
+                    escrow,
+                    ctx.accounts.black_authority.as_ref(),
+                    black_share,
+                    game_id,
+                    bump,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    let winner = match result {
+        GameResult::Winner(winner) => winner,
+        _ => Pubkey::default(),
+    };
+    let white = ctx.accounts.white_authority.key();
+    let black = ctx.accounts.black_authority.key();
+    emit!(GameFinalized {
+        game_id,
+        white,
+        black,
+        winner,
+        result_code: result_code(result),
+        wager_amount,
+        country_fee,
+        fees_advanced,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
+
+    update_profiles(ctx, result, game_white, wager_amount, match_type)
+}
+
+pub fn settle_cancelled_game(ctx: Context<EndGame>, game_id: u64) -> Result<()> {
+    {
+        let game = &ctx.accounts.game;
+        require!(
+            game.status == GameStatus::Cancelled,
+            GameErrorCode::InvalidGameStatus
+        );
+        guards::require_undelegated(game)?;
+        require!(
+            game.result == GameResult::None,
+            GameErrorCode::InvalidGameStatus
+        );
+    }
+
+    let wager_amount = ctx.accounts.game.wager_amount;
+    let mut refunded_white = false;
+    let mut refunded_black = false;
+    if wager_amount > 0 && ctx.accounts.game.wager_token.is_none() {
+        let bump = ctx.bumps.escrow_pda;
+        let sp = &ctx.accounts.system_program;
+        let escrow = &ctx.accounts.escrow_pda;
+
+        if escrow.lamports() >= wager_amount {
+            escrow::pay_from_game_escrow(
+                sp,
+                escrow,
+                ctx.accounts.white_authority.as_ref(),
+                wager_amount,
+                game_id,
+                bump,
+            )?;
+            refunded_white = true;
+        }
+
+        if escrow.lamports() >= wager_amount {
+            escrow::pay_from_game_escrow(
+                sp,
+                escrow,
+                ctx.accounts.black_authority.as_ref(),
+                wager_amount,
+                game_id,
+                bump,
+            )?;
+            refunded_black = true;
+        }
+    }
+
+    ctx.accounts.game.status = GameStatus::Settled;
+    emit!(GameCancelledSettlement {
+        game_id,
+        white: ctx.accounts.white_authority.key(),
+        black: ctx.accounts.black_authority.key(),
+        wager_amount,
+        refunded_white,
+        refunded_black,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
+    Ok(())
+}
+
+fn update_profiles(
+    ctx: Context<EndGame>,
+    result: GameResult,
+    game_white: Pubkey,
+    wager_amount: u64,
+    match_type: MatchType,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let bucket = bucket_for_time_control(ctx.accounts.game.base_time_seconds);
+    let white_profile = &mut ctx.accounts.white_profile;
+    let black_profile = &mut ctx.accounts.black_profile;
+
+    if match_type != MatchType::Free {
+        if white_profile.username.len() > 20 {
+            white_profile.username = String::new();
+            white_profile.username_set = false;
+        }
+        if black_profile.username.len() > 20 {
+            black_profile.username = String::new();
+            black_profile.username_set = false;
+        }
+
+        let sa = match result {
+            GameResult::Winner(w) => {
+                if w == game_white {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.5,
+        };
+        let white_before = *rating_field_mut(white_profile, bucket);
+        let black_before = *rating_field_mut(black_profile, bucket);
+        let (new_w, new_b) = calculate_elo_update(white_before, black_before, sa);
+        *rating_field_mut(white_profile, bucket) = new_w;
+        *rating_field_mut(black_profile, bucket) = new_b;
+        white_profile.last_played = now;
+        black_profile.last_played = now;
+
+        if let GameResult::Winner(w) = result {
+            let (winner, loser) = if w == game_white {
+                (&mut *white_profile, &mut *black_profile)
+            } else {
+                (&mut *black_profile, &mut *white_profile)
+            };
+            winner.win_streak = winner
+                .win_streak
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            if winner.win_streak > winner.best_streak {
+                winner.best_streak = winner.win_streak;
+            }
+            loser.win_streak = 0;
+            winner.tournament_wins = winner
+                .tournament_wins
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            match winner.country.as_str() {
+                "GB" => {
+                    winner.annual_wins_gbp = winner
+                        .annual_wins_gbp
+                        .checked_add(wager_amount)
+                        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+                }
+                "BR" => {
+                    winner.annual_wins_brl = winner
+                        .annual_wins_brl
+                        .checked_add(wager_amount)
+                        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+                }
+                "CA" => {
+                    winner.annual_wins_cad = winner
+                        .annual_wins_cad
+                        .checked_add(wager_amount)
+                        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+                }
+                "DE" => {
+                    winner.annual_wins_eur = winner
+                        .annual_wins_eur
+                        .checked_add(wager_amount)
+                        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+                }
+                _ => {}
+            }
+        } else if result == GameResult::Draw {
+            white_profile.win_streak = 0;
+            black_profile.win_streak = 0;
+        }
+
+        white_profile.ranked_games = white_profile
+            .ranked_games
+            .checked_add(1)
+            .ok_or(GameErrorCode::ArithmeticOverflow)?;
+        black_profile.ranked_games = black_profile
+            .ranked_games
+            .checked_add(1)
+            .ok_or(GameErrorCode::ArithmeticOverflow)?;
+    }
+
+    white_profile.games_played = white_profile
+        .games_played
+        .checked_add(1)
+        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+    black_profile.games_played = black_profile
+        .games_played
+        .checked_add(1)
+        .ok_or(GameErrorCode::ArithmeticOverflow)?;
+    match result {
+        GameResult::Winner(w) => {
+            if w == game_white {
+                white_profile.wins = white_profile
+                    .wins
+                    .checked_add(1)
+                    .ok_or(GameErrorCode::ArithmeticOverflow)?;
+                black_profile.losses = black_profile
+                    .losses
+                    .checked_add(1)
+                    .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            } else {
+                black_profile.wins = black_profile
+                    .wins
+                    .checked_add(1)
+                    .ok_or(GameErrorCode::ArithmeticOverflow)?;
+                white_profile.losses = white_profile
+                    .losses
+                    .checked_add(1)
+                    .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            }
+        }
+        GameResult::Draw => {
+            white_profile.draws = white_profile
+                .draws
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+            black_profile.draws = black_profile
+                .draws
+                .checked_add(1)
+                .ok_or(GameErrorCode::ArithmeticOverflow)?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn split_draw_remaining(remaining: u64) -> (u64, u64) {
+    let white_share = remaining / 2;
+    let black_share = remaining - white_share;
+    (white_share, black_share)
+}
+
+#[cfg(test)]
+mod split_draw_remaining_tests {
+    use super::split_draw_remaining;
+
+    #[test]
+    fn even_splits_equally() {
+        assert_eq!(split_draw_remaining(2_000_000), (1_000_000, 1_000_000));
+    }
+
+    #[test]
+    fn odd_accounts_for_every_lamport() {
+        let (white, black) = split_draw_remaining(1_999_999);
+        assert_eq!(white + black, 1_999_999);
+        assert_eq!(white, 999_999);
+        assert_eq!(black, 1_000_000);
+    }
+
+    #[test]
+    fn zero_splits_to_zero() {
+        assert_eq!(split_draw_remaining(0), (0, 0));
+    }
+
+    #[test]
+    fn one_lamport_goes_to_black_not_lost() {
+        assert_eq!(split_draw_remaining(1), (0, 1));
+    }
+}

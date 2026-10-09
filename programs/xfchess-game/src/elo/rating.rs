@@ -1,0 +1,152 @@
+use crate::errors::GameErrorCode;
+use crate::state::PlayerProfile;
+use anchor_lang::prelude::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RatingBucket {
+    Bullet,
+    Blitz,
+    Rapid,
+    Classical,
+}
+
+pub fn bucket_for_time_control(base_time_seconds: u64) -> RatingBucket {
+    match base_time_seconds {
+        0 => RatingBucket::Classical,
+        1..=179 => RatingBucket::Bullet,
+        180..=599 => RatingBucket::Blitz,
+        600..=1499 => RatingBucket::Rapid,
+        _ => RatingBucket::Classical,
+    }
+}
+
+pub fn rating_field_mut(profile: &mut PlayerProfile, bucket: RatingBucket) -> &mut f64 {
+    let field = match bucket {
+        RatingBucket::Bullet => &mut profile.elo_bullet,
+        RatingBucket::Blitz => &mut profile.elo_blitz,
+        RatingBucket::Rapid => &mut profile.elo_rapid,
+        RatingBucket::Classical => &mut profile.elo_rating,
+    };
+    if *field == 0.0 {
+        *field = INITIAL_ELO_CENTISCALE as f64;
+    }
+    field
+}
+
+pub const RATING_SCALE: u32 = 100;
+pub const INITIAL_ELO: u32 = 1200;
+pub const INITIAL_ELO_CENTISCALE: u32 = INITIAL_ELO * RATING_SCALE;
+pub const MIN_EXTERNAL_ELO: u32 = 100;
+pub const MAX_EXTERNAL_ELO: u32 = 4000;
+
+pub fn external_to_centiscale(rating: u32) -> Result<u32> {
+    validate_external_rating(rating)?;
+    rating
+        .checked_mul(RATING_SCALE)
+        .ok_or_else(|| GameErrorCode::ArithmeticOverflow.into())
+}
+
+pub fn centiscale_to_display(rating: f64) -> u32 {
+    (rating / RATING_SCALE as f64).round() as u32
+}
+
+pub fn validate_external_rating(rating: u32) -> Result<()> {
+    require!(
+        (MIN_EXTERNAL_ELO..=MAX_EXTERNAL_ELO).contains(&rating),
+        GameErrorCode::EloOutOfRange
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_accepts_range_boundaries() {
+        assert!(validate_external_rating(MIN_EXTERNAL_ELO).is_ok());
+        assert!(validate_external_rating(MAX_EXTERNAL_ELO).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_just_outside_boundaries() {
+        assert!(validate_external_rating(MIN_EXTERNAL_ELO - 1).is_err());
+        assert!(validate_external_rating(MAX_EXTERNAL_ELO + 1).is_err());
+    }
+
+    #[test]
+    fn external_to_centiscale_scales_by_100() {
+        assert_eq!(external_to_centiscale(1500).unwrap(), 150000);
+        assert_eq!(external_to_centiscale(MIN_EXTERNAL_ELO).unwrap(), 10000);
+    }
+
+    #[test]
+    fn external_to_centiscale_rejects_out_of_range_before_scaling() {
+        assert!(external_to_centiscale(MAX_EXTERNAL_ELO + 1).is_err());
+    }
+
+    #[test]
+    fn centiscale_to_display_rounds_to_nearest_elo() {
+        assert_eq!(centiscale_to_display(150000.0), 1500);
+        assert_eq!(centiscale_to_display(150049.0), 1500);
+        assert_eq!(centiscale_to_display(150050.0), 1501);
+    }
+
+    #[test]
+    fn initial_elo_constant_round_trips() {
+        assert_eq!(INITIAL_ELO_CENTISCALE, INITIAL_ELO * RATING_SCALE);
+        assert_eq!(
+            centiscale_to_display(INITIAL_ELO_CENTISCALE as f64),
+            INITIAL_ELO
+        );
+    }
+
+    #[test]
+    fn bucket_for_time_control_matches_client_thresholds() {
+        assert_eq!(bucket_for_time_control(0), RatingBucket::Classical);
+        assert_eq!(bucket_for_time_control(15), RatingBucket::Bullet);
+        assert_eq!(bucket_for_time_control(60), RatingBucket::Bullet);
+        assert_eq!(bucket_for_time_control(179), RatingBucket::Bullet);
+        assert_eq!(bucket_for_time_control(180), RatingBucket::Blitz);
+        assert_eq!(bucket_for_time_control(300), RatingBucket::Blitz);
+        assert_eq!(bucket_for_time_control(599), RatingBucket::Blitz);
+        assert_eq!(bucket_for_time_control(600), RatingBucket::Rapid);
+        assert_eq!(bucket_for_time_control(1499), RatingBucket::Rapid);
+        assert_eq!(bucket_for_time_control(1500), RatingBucket::Classical);
+        assert_eq!(bucket_for_time_control(1800), RatingBucket::Classical);
+    }
+
+    #[test]
+    fn rating_field_mut_lazily_seeds_on_first_touch() {
+        let mut profile = PlayerProfile {
+            elo_rating: 130000.0,
+            ..Default::default()
+        };
+
+        assert_eq!(profile.elo_bullet, 0.0);
+        assert_eq!(
+            *rating_field_mut(&mut profile, RatingBucket::Bullet),
+            INITIAL_ELO_CENTISCALE as f64
+        );
+        assert_eq!(profile.elo_bullet, INITIAL_ELO_CENTISCALE as f64);
+
+        assert_eq!(
+            *rating_field_mut(&mut profile, RatingBucket::Classical),
+            130000.0
+        );
+    }
+
+    #[test]
+    fn rating_field_mut_maps_each_bucket_to_its_own_field() {
+        let mut profile = PlayerProfile::default();
+        *rating_field_mut(&mut profile, RatingBucket::Bullet) = 111111.0;
+        *rating_field_mut(&mut profile, RatingBucket::Blitz) = 222222.0;
+        *rating_field_mut(&mut profile, RatingBucket::Rapid) = 333333.0;
+        *rating_field_mut(&mut profile, RatingBucket::Classical) = 444444.0;
+
+        assert_eq!(profile.elo_bullet, 111111.0);
+        assert_eq!(profile.elo_blitz, 222222.0);
+        assert_eq!(profile.elo_rapid, 333333.0);
+        assert_eq!(profile.elo_rating, 444444.0);
+    }
+}

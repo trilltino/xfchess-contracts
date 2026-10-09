@@ -1,0 +1,341 @@
+use crate::errors::GameErrorCode;
+use crate::lifecycle::clock;
+use crate::state::{Game, GameResult, GameStatus};
+use anchor_lang::prelude::*;
+
+pub fn finish_by_resign(game: &mut Game, resigner: Pubkey, now: i64) -> Result<()> {
+    require!(
+        game.status == GameStatus::Active,
+        GameErrorCode::GameNotActive
+    );
+    require!(
+        resigner == game.white || resigner == game.black,
+        GameErrorCode::NotInGame
+    );
+
+    let winner = if resigner == game.white {
+        game.black
+    } else {
+        game.white
+    };
+
+    game.result = GameResult::Winner(winner);
+    game.status = GameStatus::Finished;
+    clock::mark_terminal(game, now);
+    Ok(())
+}
+
+pub fn record_draw_offer(game: &mut Game, offerer: Pubkey) -> Result<()> {
+    require!(
+        game.status == GameStatus::Active,
+        GameErrorCode::GameNotActive
+    );
+    require!(
+        offerer == game.white || offerer == game.black,
+        GameErrorCode::NotInGame
+    );
+
+    game.draw_offered_by = Some(offerer);
+    Ok(())
+}
+
+pub fn finish_by_draw_agreement(game: &mut Game, accepter: Pubkey, now: i64) -> Result<()> {
+    require!(
+        game.status == GameStatus::Active,
+        GameErrorCode::GameNotActive
+    );
+    require!(
+        accepter == game.white || accepter == game.black,
+        GameErrorCode::NotInGame
+    );
+    let offerer = game
+        .draw_offered_by
+        .ok_or(GameErrorCode::NoDrawOfferPending)?;
+    require!(accepter != offerer, GameErrorCode::CannotAcceptOwnDrawOffer);
+
+    game.result = GameResult::Draw;
+    game.status = GameStatus::Finished;
+    game.draw_offered_by = None;
+    clock::mark_terminal(game, now);
+    Ok(())
+}
+
+pub fn finish_by_timeout(game: &mut Game, now: i64) -> Result<()> {
+    require!(
+        game.status == GameStatus::Active,
+        GameErrorCode::GameNotActive
+    );
+
+    let inactivity_window = timeout_window_seconds(game);
+    require!(
+        now - game.updated_at > inactivity_window,
+        GameErrorCode::TimeoutNotExpired
+    );
+
+    resolve_expired_timeout(game, now);
+    Ok(())
+}
+
+pub fn finish_by_timeout_if_expired(game: &mut Game, now: i64) -> Result<bool> {
+    if game.status != GameStatus::Active || game.base_time_seconds == 0 {
+        return Ok(false);
+    }
+
+    let time_elapsed = now - game.updated_at;
+    if time_elapsed <= timeout_window_seconds(game) {
+        return Ok(false);
+    }
+
+    resolve_expired_timeout(game, now);
+    Ok(true)
+}
+
+pub use clock::timeout_window_seconds;
+
+fn resolve_expired_timeout(game: &mut Game, now: i64) {
+    if game.move_count == 0 {
+        game.status = GameStatus::Cancelled;
+        game.result = GameResult::None;
+        clock::mark_terminal(game, now);
+        return;
+    }
+
+    let white_timed_out = game.turn % 2 == 1;
+    let winner = if white_timed_out {
+        game.black
+    } else {
+        game.white
+    };
+
+    game.status = GameStatus::Finished;
+    game.result = GameResult::Winner(winner);
+    clock::mark_terminal(game, now);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn active_game() -> Game {
+        Game {
+            game_id: 1,
+            white: Pubkey::new_unique(),
+            black: Pubkey::new_unique(),
+            status: GameStatus::Active,
+            last_move_timestamp: 0,
+            fees_advanced: 0,
+            fee_payer: Pubkey::new_unique(),
+            result: GameResult::None,
+            board_state: [0; 68],
+            move_count: 0,
+            halfmove_clock: 0,
+            turn: 1,
+            created_at: 0,
+            updated_at: 0,
+            wager_amount: 0,
+            wager_token: None,
+            game_type: crate::state::GameType::PvP,
+            match_type: crate::state::MatchType::Free,
+            country_fee: 0,
+            base_time_seconds: 1,
+            increment_seconds: 0,
+            bump: 0,
+            is_delegated: true,
+            tournament_id: None,
+            nonce: 0,
+            draw_offered_by: None,
+        }
+    }
+
+    #[test]
+    fn resign_finishes_without_clearing_delegation() {
+        let mut game = active_game();
+        let white = game.white;
+        let black = game.black;
+
+        finish_by_resign(&mut game, white, 10).unwrap();
+
+        assert_eq!(game.status, GameStatus::Finished);
+        assert_eq!(game.result, GameResult::Winner(black));
+        assert!(game.is_delegated);
+        assert_eq!(game.updated_at, 10);
+    }
+
+    #[test]
+    fn draw_offer_then_accept_by_other_player_finishes_as_draw() {
+        let mut game = active_game();
+        let white = game.white;
+        let black = game.black;
+
+        record_draw_offer(&mut game, white).unwrap();
+        assert_eq!(game.draw_offered_by, Some(white));
+        assert_eq!(
+            game.status,
+            GameStatus::Active,
+            "offering alone doesn't end the game"
+        );
+
+        finish_by_draw_agreement(&mut game, black, 10).unwrap();
+
+        assert_eq!(game.status, GameStatus::Finished);
+        assert_eq!(game.result, GameResult::Draw);
+        assert_eq!(game.draw_offered_by, None);
+        assert!(game.is_delegated);
+        assert_eq!(game.updated_at, 10);
+    }
+
+    #[test]
+    fn accept_draw_rejects_accepting_own_offer() {
+        let mut game = active_game();
+        let white = game.white;
+
+        record_draw_offer(&mut game, white).unwrap();
+        let err = finish_by_draw_agreement(&mut game, white, 10).unwrap_err();
+
+        assert_eq!(err, GameErrorCode::CannotAcceptOwnDrawOffer.into());
+        assert_eq!(game.status, GameStatus::Active);
+    }
+
+    #[test]
+    fn accept_draw_rejects_when_no_offer_pending() {
+        let mut game = active_game();
+        let black = game.black;
+
+        let err = finish_by_draw_agreement(&mut game, black, 10).unwrap_err();
+
+        assert_eq!(err, GameErrorCode::NoDrawOfferPending.into());
+    }
+
+    #[test]
+    fn offer_draw_rejects_non_participant() {
+        let mut game = active_game();
+        let stranger = Pubkey::new_unique();
+
+        let err = record_draw_offer(&mut game, stranger).unwrap_err();
+
+        assert_eq!(err, GameErrorCode::NotInGame.into());
+    }
+
+    #[test]
+    fn timeout_finishes_without_clearing_delegation() {
+        let mut game = active_game();
+        game.move_count = 1;
+        let black = game.black;
+
+        finish_by_timeout(&mut game, 100).unwrap();
+
+        assert_eq!(game.status, GameStatus::Finished);
+        assert_eq!(game.result, GameResult::Winner(black));
+        assert!(game.is_delegated);
+    }
+
+    #[test]
+    fn timeout_awards_white_when_black_flags() {
+        let mut game = active_game();
+        game.turn = 2;
+        game.move_count = 1;
+        let white = game.white;
+
+        finish_by_timeout(&mut game, 100).unwrap();
+
+        assert_eq!(game.status, GameStatus::Finished);
+        assert_eq!(game.result, GameResult::Winner(white));
+    }
+
+    #[test]
+    fn timeout_rejects_before_inactivity_window_elapses() {
+        let mut game = active_game();
+        game.updated_at = 100;
+
+        let err = finish_by_timeout(&mut game, 102).unwrap_err();
+
+        assert_eq!(err, GameErrorCode::TimeoutNotExpired.into());
+        assert_eq!(
+            game.status,
+            GameStatus::Active,
+            "a rejected timeout claim must not mutate the game"
+        );
+    }
+
+    #[test]
+    fn crank_twin_matches_manual_claim_timeout_outcome() {
+        for (turn, move_count) in [(1u16, 0u16), (1, 1), (2, 1)] {
+            let mut manual = active_game();
+            manual.turn = turn;
+            manual.move_count = move_count;
+            let mut cranked = manual.clone();
+
+            finish_by_timeout(&mut manual, 100).unwrap();
+            let resolved = finish_by_timeout_if_expired(&mut cranked, 100).unwrap();
+
+            assert!(
+                resolved,
+                "crank should resolve an expired game (turn={turn}, move_count={move_count})"
+            );
+            assert_eq!(cranked.status, manual.status);
+            assert_eq!(cranked.result, manual.result);
+        }
+    }
+
+    #[test]
+    fn timeout_cancels_zero_move_game_instead_of_awarding_black() {
+        let mut game = active_game();
+
+        finish_by_timeout(&mut game, 100).unwrap();
+
+        assert_eq!(game.status, GameStatus::Cancelled);
+        assert_eq!(game.result, GameResult::None);
+        assert_eq!(game.updated_at, 100);
+    }
+
+    #[test]
+    fn crank_timeout_cancels_zero_move_game_instead_of_awarding_black() {
+        let mut game = active_game();
+
+        let resolved = finish_by_timeout_if_expired(&mut game, 100).unwrap();
+
+        assert!(resolved);
+        assert_eq!(game.status, GameStatus::Cancelled);
+        assert_eq!(game.result, GameResult::None);
+        assert_eq!(game.updated_at, 100);
+    }
+
+    #[test]
+    fn crank_twin_is_a_noop_before_inactivity_window_elapses() {
+        let mut game = active_game();
+        game.updated_at = 100;
+
+        let resolved = finish_by_timeout_if_expired(&mut game, 102).unwrap();
+
+        assert!(!resolved);
+        assert_eq!(game.status, GameStatus::Active);
+    }
+
+    #[test]
+    fn timeout_accepts_just_past_the_fixed_90s_window_for_timed_games() {
+        let mut game = active_game();
+        game.move_count = 1;
+        game.updated_at = 100;
+
+        finish_by_timeout(
+            &mut game,
+            100 + super::clock::TIMED_GAME_INACTIVITY_WINDOW_SECONDS + 1,
+        )
+        .unwrap();
+
+        assert_eq!(game.status, GameStatus::Finished);
+    }
+
+    #[test]
+    fn untimed_games_keep_the_24h_window_not_the_short_timed_one() {
+        let mut game = active_game();
+        game.base_time_seconds = 0;
+        game.move_count = 1;
+        game.updated_at = 100;
+
+        let err = finish_by_timeout(&mut game, 100 + 3_600).unwrap_err();
+
+        assert_eq!(err, GameErrorCode::TimeoutNotExpired.into());
+        assert_eq!(game.status, GameStatus::Active);
+    }
+}
