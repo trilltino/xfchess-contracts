@@ -81,6 +81,7 @@ pub use governance_ix::{ClaimStaleDispute, DisputeGame, RecoverStuckDelegation, 
 pub use moves_ix::{GlobalRecordMove, RecordMove};
 pub use tournament_ix::{
     AdvanceRound, AdvanceWinner, AuthorizeTournamentSessionArgs, AuthorizeTournamentSessionCtx,
+    BindTournamentPass, IssuePassEligibility,
     CancelTournament, ClaimTournamentPrize, CloseTournament, CompleteSwissTournament,
     DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize, InitializeMatch,
     InitializeShardsMedium, InitializeShardsSmall, InitializeTournament,
@@ -201,6 +202,12 @@ pub mod __client_accounts_initialize_tournament_escrow {
 }
 pub mod __client_accounts_register_player {
     pub use crate::tournament_ix::registration::register::__client_accounts_register_player::*;
+}
+pub mod __client_accounts_bind_tournament_pass {
+    pub use crate::tournament_ix::registration::bind_pass::__client_accounts_bind_tournament_pass::*;
+}
+pub mod __client_accounts_issue_pass_eligibility {
+    pub use crate::tournament_ix::registration::issue_pass_eligibility::__client_accounts_issue_pass_eligibility::*;
 }
 pub mod __client_accounts_leave_tournament {
     pub use crate::tournament_ix::registration::leave::__client_accounts_leave_tournament::*;
@@ -687,12 +694,21 @@ pub mod xfchess_game {
         )
     }
 
-    pub fn register_player(
-        ctx: Context<RegisterPlayer>,
-        tournament_id: u64,
-        elo: u32,
-    ) -> Result<()> {
-        crate::tournament_ix::registration::register::handler(ctx, tournament_id, elo)
+    /// Registers the signer. The rating is read from the signer's `PlayerProfile`; when the
+    /// tournament has a pass binding, one pass is burned as the ticket.
+    pub fn register_player(ctx: Context<RegisterPlayer>, tournament_id: u64) -> Result<()> {
+        crate::tournament_ix::registration::register::handler(ctx, tournament_id)
+    }
+
+    /// Organizer-only: requires a tournament pass for every later registration.
+    pub fn bind_tournament_pass(ctx: Context<BindTournamentPass>, tournament_id: u64) -> Result<()> {
+        crate::tournament_ix::registration::bind_pass::handler(ctx, tournament_id)
+    }
+
+    /// Attests the player's profile rating to the tournament's pass program by CPI, issuing or
+    /// refreshing their eligibility so a pass can be transferred to them. Anyone may call it.
+    pub fn issue_pass_eligibility(ctx: Context<IssuePassEligibility>, tournament_id: u64) -> Result<()> {
+        crate::tournament_ix::registration::issue_pass_eligibility::handler(ctx, tournament_id)
     }
 
     pub fn leave_tournament(ctx: Context<LeaveTournament>, tournament_id: u64) -> Result<()> {

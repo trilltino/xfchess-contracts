@@ -102,6 +102,14 @@ name = "tournament_registration_e2e_tests"
 path = "tests/tournament_registration_e2e_tests.rs"
 
 [[test]]
+name = "tournament_pass_tests"
+path = "tests/tournament_pass_tests.rs"
+
+[[test]]
+name = "tournament_pass_bridge_tests"
+path = "tests/tournament_pass_bridge_tests.rs"
+
+[[test]]
 name = "tournament_match_tests"
 path = "tests/tournament_match_tests.rs"
 

@@ -121,7 +121,6 @@ impl InitializeTournament {
 #[instruction]
 pub struct RegisterPlayer {
     pub tournament_id: u64,
-    pub elo: u32,
 }
 
 impl RegisterPlayer {

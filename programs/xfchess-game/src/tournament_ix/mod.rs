@@ -14,7 +14,7 @@ pub use matches::{
     RecordSwissResult, SwissMatchResult,
 };
 pub use prizes::{ClaimTournamentPrize, DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize};
-pub use registration::{LeaveTournament, RegisterPlayer};
+pub use registration::{BindTournamentPass, IssuePassEligibility, LeaveTournament, RegisterPlayer};
 pub use session::{
     AuthorizeTournamentSessionArgs, AuthorizeTournamentSessionCtx, RevokeTournamentSessionCtx,
     SessionCreateGame, SessionJoinGame,

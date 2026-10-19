@@ -1,0 +1,78 @@
+use crate::constants::*;
+use crate::errors::GameErrorCode;
+use crate::state::*;
+use anchor_lang::prelude::*;
+use anchor_spl::token_2022::spl_token_2022::{
+    extension::{transfer_hook::get_program_id, StateWithExtensions},
+    state::Mint as MintState,
+};
+use anchor_spl::token_interface::Mint;
+
+/// Requires a tournament pass for every later registration. The mint must be a zero-decimal
+/// Token-2022 mint whose transfer hook is the xfchess_pass program, so passes can only move
+/// to wallets that program has approved. Only the organizer can bind, before anyone registers.
+#[derive(Accounts)]
+#[instruction(tournament_id: u64)]
+pub struct BindTournamentPass<'info> {
+    #[account(
+        seeds = [TOURNAMENT_SEED, &tournament_id.to_le_bytes()],
+        bump = tournament.bump
+    )]
+    pub tournament: Account<'info, Tournament>,
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + TournamentPassBinding::INIT_SPACE,
+        seeds = [TOURNAMENT_PASS_BINDING_SEED, &tournament_id.to_le_bytes()],
+        bump
+    )]
+    pub pass_binding: Account<'info, TournamentPassBinding>,
+    pub pass_mint: InterfaceAccount<'info, Mint>,
+    #[account(
+        mut,
+        constraint = authority.key() == tournament.authority @ GameErrorCode::NotTournamentAuthority
+    )]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handler(ctx: Context<BindTournamentPass>, tournament_id: u64) -> Result<()> {
+    let tournament = &ctx.accounts.tournament;
+    require!(
+        tournament.tournament_id == tournament_id,
+        GameErrorCode::UnauthorizedAccess
+    );
+    require!(
+        tournament.status == TournamentStatus::Registration,
+        GameErrorCode::TournamentNotInRegistration
+    );
+    // Players who registered before the binding would hold no pass.
+    require!(
+        tournament.num_registered_players == 0,
+        GameErrorCode::InvalidTournamentStatus
+    );
+    require_pass_mint(&ctx.accounts.pass_mint.to_account_info())?;
+
+    ctx.accounts.pass_binding.set_inner(TournamentPassBinding {
+        tournament_id,
+        pass_mint: ctx.accounts.pass_mint.key(),
+        bump: ctx.bumps.pass_binding,
+    });
+    Ok(())
+}
+
+fn require_pass_mint(mint: &AccountInfo) -> Result<()> {
+    require_keys_eq!(
+        *mint.owner,
+        anchor_spl::token_2022::ID,
+        GameErrorCode::InvalidPassMint
+    );
+    let data = mint.try_borrow_data()?;
+    let state = StateWithExtensions::<MintState>::unpack(&data)
+        .map_err(|_| error!(GameErrorCode::InvalidPassMint))?;
+    require!(
+        state.base.decimals == 0 && get_program_id(&state) == Some(XFCHESS_PASS_PROGRAM_ID),
+        GameErrorCode::InvalidPassMint
+    );
+    Ok(())
+}

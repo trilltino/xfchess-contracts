@@ -311,6 +311,15 @@ pub enum GameErrorCode {
 
     #[msg("Dynamic remaining accounts do not match expected set, order, or ownership.")]
     InvalidRemainingAccounts,
+
+    #[msg("This tournament requires a pass, but the pass accounts were not supplied.")]
+    PassRequired,
+    #[msg("The supplied mint is not this tournament's pass mint.")]
+    PassMintMismatch,
+    #[msg("The player does not hold a tournament pass.")]
+    PassNotHeld,
+    #[msg("A pass mint must be a zero-decimal Token-2022 mint hooked by the xfchess_pass program.")]
+    InvalidPassMint,
 }
 
 pub use GameErrorCode as XfchessGameError;

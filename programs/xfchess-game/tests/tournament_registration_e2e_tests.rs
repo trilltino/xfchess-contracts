@@ -51,12 +51,7 @@ fn init_profile_ix(player: &Pubkey, username: &str) -> Instruction {
     }
 }
 
-fn register_player_ix(
-    tournament_id: u64,
-    player: &Pubkey,
-    host_treasury: &Pubkey,
-    elo: u32,
-) -> Instruction {
+fn register_player_ix(tournament_id: u64, player: &Pubkey, host_treasury: &Pubkey) -> Instruction {
     let program_id = xfchess_game::ID;
     let accounts = xfchess_game::__client_accounts_register_player::RegisterPlayer {
         tournament: tournament_pda(tournament_id),
@@ -69,9 +64,18 @@ fn register_player_ix(
         tournament_players_shard_3: Some(program_id),
         host_treasury: *host_treasury,
         system_program: solana_system_interface::program::ID,
+        // No pass binding for this tournament, so no pass accounts are needed.
+        pass_binding: Pubkey::find_program_address(
+            &[b"t_pass", &tournament_id.to_le_bytes()],
+            &program_id,
+        )
+        .0,
+        pass_mint: None,
+        player_pass_account: None,
+        token_program_2022: None,
     }
     .to_account_metas(None);
-    let data = xfchess_game::instruction::RegisterPlayer { tournament_id, elo }.data();
+    let data = xfchess_game::instruction::RegisterPlayer { tournament_id }.data();
     Instruction {
         program_id,
         accounts,
@@ -248,8 +252,9 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
     // 6. THE thing this test exists to prove: register_player, built exactly
     // the way the fixed game client builds it.
     let player_balance_before = ctx.banks_client.get_balance(player.pubkey()).await.unwrap();
-    let register_ix =
-        register_player_ix(tournament_id, &player.pubkey(), &authority.pubkey(), 1200);
+    // The rating is read from the profile `init_profile` just created (1200 in the blitz
+    // bucket of this 300-second tournament), so the caller passes no Elo.
+    let register_ix = register_player_ix(tournament_id, &player.pubkey(), &authority.pubkey());
     let mut tx = Transaction::new_with_payer(&[register_ix], Some(&player.pubkey()));
     tx.sign(&[&player], ctx.last_blockhash);
     ctx.banks_client
