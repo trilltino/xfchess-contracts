@@ -16,7 +16,7 @@ pub use matches::{
 pub use prizes::{ClaimTournamentPrize, DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize};
 pub use registration::{
     BindTournamentPass, IssuePassEligibility, LeaveTournament, RegisterPlayer,
-    RevokePassEligibility,
+    RevokePassEligibility, SetPassPaused,
 };
 pub use session::{
     AuthorizeTournamentSessionArgs, AuthorizeTournamentSessionCtx, RevokeTournamentSessionCtx,

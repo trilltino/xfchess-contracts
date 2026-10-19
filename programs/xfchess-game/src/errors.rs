@@ -326,6 +326,8 @@ pub enum GameErrorCode {
     PassSupplyExceedsPlayers,
     #[msg("This player's pass eligibility was revoked and cannot be refreshed.")]
     PassEligibilityRevoked,
+    #[msg("The player's profile is not KYC-verified, so it cannot be attested for a pass.")]
+    ProfileNotVerified,
 }
 
 pub use GameErrorCode as XfchessGameError;

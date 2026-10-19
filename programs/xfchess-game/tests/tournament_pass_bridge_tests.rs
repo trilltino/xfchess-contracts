@@ -43,6 +43,7 @@ const PASS_ISSUE: [u8; 8] = [29, 88, 236, 137, 74, 17, 193, 144];
 const PASS_INITIALIZE: [u8; 8] = [175, 175, 109, 31, 13, 152, 155, 237];
 const PASS_ERROR_UNAUTHORIZED_REGISTRAR: u32 = 0xD00B;
 const PASS_ERROR_REVOKED: u32 = 0xD004;
+const PASS_ERROR_PAUSED: u32 = 0xD003;
 
 fn tournament_pda(seed: &[u8]) -> Pubkey {
     Pubkey::find_program_address(&[seed, &ID.to_le_bytes()], &xfchess_game::ID).0
@@ -84,6 +85,7 @@ fn profile(player: &Pubkey, blitz: u32) -> PlayerProfile {
     PlayerProfile {
         authority: *player,
         elo_blitz: f64::from(blitz) * 100.0,
+        is_verified: true,
         ..Default::default()
     }
 }
@@ -364,6 +366,27 @@ async fn revoke_mint_authority(ctx: &mut ProgramTestContext, mint: &Pubkey) {
     .await;
 }
 
+fn pause_ix(mint: &Pubkey, authority: &Pubkey, is_paused: bool) -> Instruction {
+    Instruction {
+        program_id: xfchess_game::ID,
+        accounts: xfchess_game::__client_accounts_set_pass_paused::SetPassPaused {
+            tournament: tournament_pda(b"tournament"),
+            pass_binding: binding_pda(),
+            pass_mint: *mint,
+            pass_config: config_pda(mint),
+            registrar: registrar_pda(),
+            authority: *authority,
+            pass_program: XFCHESS_PASS_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: xfchess_game::instruction::SetPassPaused {
+            tournament_id: ID,
+            is_paused,
+        }
+        .data(),
+    }
+}
+
 fn revoke_ix(mint: &Pubkey, player: &Pubkey, authority: &Pubkey) -> Instruction {
     Instruction {
         program_id: xfchess_game::ID,
@@ -641,4 +664,79 @@ async fn the_organizer_revokes_eligibility_and_it_cannot_be_refreshed_back() {
         .expect_err("a revoked wallet cannot receive the pass");
     assert_eq!(common::custom_code(&refused), Some(PASS_ERROR_REVOKED));
     assert_eq!(token_balance(&mut ctx, player_account).await, 0);
+}
+
+#[tokio::test]
+async fn the_bridge_refuses_profiles_the_kyc_authority_has_not_verified() {
+    let fixture = Fixture::new(&[1_500]);
+    let mut ctx = fixture.start().await;
+    let mint = bound_pass(&fixture, &mut ctx).await;
+    let player = fixture.players[0].0.pubkey();
+    let payer = ctx.payer.insecure_clone();
+    let unverified = PlayerProfile {
+        is_verified: false,
+        ..profile(&player, 1_500)
+    };
+    ctx.set_account(
+        &common::profile_pda(&player).0,
+        &common::program_account(&unverified, 8 + PlayerProfile::INIT_SPACE).into(),
+    );
+    assert_eq!(
+        bridge_error(&mut ctx, bridge_ix(&mint, &player, &payer.pubkey()), &[]).await,
+        code(GameErrorCode::ProfileNotVerified)
+    );
+    assert!(ctx
+        .banks_client
+        .get_account(record_pda(&mint, &player))
+        .await
+        .expect("lookup")
+        .is_none());
+}
+
+#[tokio::test]
+async fn the_organizer_pauses_and_resumes_pass_transfers() {
+    let fixture = Fixture::new(&[1_500]);
+    let mut ctx = fixture.start().await;
+    let (mint, treasury) = bound_pass_with(&fixture, &mut ctx, 1).await;
+    let payer = ctx.payer.insecure_clone();
+    let player = fixture.players[0].0.pubkey();
+    let player_account = create_token_account(&mut ctx, &mint, &player, 0).await;
+    common::send(&mut ctx, bridge_ix(&mint, &player, &payer.pubkey()), &[])
+        .await
+        .expect("attest");
+
+    let stranger = Keypair::new();
+    ctx.set_account(&stranger.pubkey(), &common::system_account(WALLET).into());
+    assert_eq!(
+        bridge_error(&mut ctx, pause_ix(&mint, &stranger.pubkey(), true), &[&stranger]).await,
+        code(GameErrorCode::NotTournamentAuthority),
+        "only the organizer pauses"
+    );
+
+    common::send(
+        &mut ctx,
+        pause_ix(&mint, &fixture.authority.pubkey(), true),
+        &[&fixture.authority],
+    )
+    .await
+    .expect("the organizer pauses");
+    let transfer = transfer_pass_ix(&mint, &treasury, &player_account, &payer.pubkey(), &player);
+    let refused: TransactionError = common::send(&mut ctx, transfer.clone(), &[])
+        .await
+        .expect_err("transfers are paused");
+    assert_eq!(common::custom_code(&refused), Some(PASS_ERROR_PAUSED));
+    assert_eq!(token_balance(&mut ctx, player_account).await, 0);
+
+    common::send(
+        &mut ctx,
+        pause_ix(&mint, &fixture.authority.pubkey(), false),
+        &[&fixture.authority],
+    )
+    .await
+    .expect("the organizer resumes");
+    ctx.last_blockhash = ctx.get_new_latest_blockhash().await.expect("blockhash");
+    common::send(&mut ctx, transfer, &[])
+        .await
+        .expect("transfers resume");
+    assert_eq!(token_balance(&mut ctx, player_account).await, 1);
 }

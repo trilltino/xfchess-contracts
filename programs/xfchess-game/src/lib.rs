@@ -81,7 +81,7 @@ pub use governance_ix::{ClaimStaleDispute, DisputeGame, RecoverStuckDelegation, 
 pub use moves_ix::{GlobalRecordMove, RecordMove};
 pub use tournament_ix::{
     AdvanceRound, AdvanceWinner, AuthorizeTournamentSessionArgs, AuthorizeTournamentSessionCtx,
-    BindTournamentPass, IssuePassEligibility, RevokePassEligibility,
+    BindTournamentPass, IssuePassEligibility, RevokePassEligibility, SetPassPaused,
     CancelTournament, ClaimTournamentPrize, CloseTournament, CompleteSwissTournament,
     DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize, InitializeMatch,
     InitializeShardsMedium, InitializeShardsSmall, InitializeTournament,
@@ -211,6 +211,9 @@ pub mod __client_accounts_issue_pass_eligibility {
 }
 pub mod __client_accounts_revoke_pass_eligibility {
     pub use crate::tournament_ix::registration::revoke_pass_eligibility::__client_accounts_revoke_pass_eligibility::*;
+}
+pub mod __client_accounts_set_pass_paused {
+    pub use crate::tournament_ix::registration::set_pass_paused::__client_accounts_set_pass_paused::*;
 }
 pub mod __client_accounts_leave_tournament {
     pub use crate::tournament_ix::registration::leave::__client_accounts_leave_tournament::*;
@@ -718,6 +721,16 @@ pub mod xfchess_game {
     /// pass can no longer be transferred to them. A revoked record is never refreshed.
     pub fn revoke_pass_eligibility(ctx: Context<RevokePassEligibility>, tournament_id: u64) -> Result<()> {
         crate::tournament_ix::registration::revoke_pass_eligibility::handler(ctx, tournament_id)
+    }
+
+    /// Organizer-only: pauses or resumes every transfer of the tournament's pass through the
+    /// registrar PDA. Redemption by registering is not affected.
+    pub fn set_pass_paused(
+        ctx: Context<SetPassPaused>,
+        tournament_id: u64,
+        is_paused: bool,
+    ) -> Result<()> {
+        crate::tournament_ix::registration::set_pass_paused::handler(ctx, tournament_id, is_paused)
     }
 
     pub fn leave_tournament(ctx: Context<LeaveTournament>, tournament_id: u64) -> Result<()> {

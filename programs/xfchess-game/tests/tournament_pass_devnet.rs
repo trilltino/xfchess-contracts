@@ -5,10 +5,12 @@
 //! - the organizer revokes a player, and a revoked record cannot be refreshed back;
 //! - the bridge refuses ratings outside the range, the wrong mint and the wrong program, and the
 //!   pass program refuses attestations from anyone but the game's registrar PDA;
-//! - binding refuses a mint whose authority can still mint.
+//! - binding refuses a mint whose authority can still mint;
+//! - an unverified profile cannot be attested, and the organizer can pause pass transfers.
 //!
 //! Needs funded Devnet keypairs, so it is ignored by default:
-//! `VPS_KEYPAIR=<vps_authority.json> PAYER_KEYPAIR=<funded throwaway.json> cargo test -p
+//! `VPS_KEYPAIR=<vps_authority.json> KYC_KEYPAIR=<kyc_authority.json> PAYER_KEYPAIR=<funded
+//! throwaway.json> cargo test -p
 //! xfchess-game --test tournament_pass_devnet -- --ignored --nocapture`
 
 use std::{
@@ -48,6 +50,7 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const DEVNET: &str = "https://api.devnet.solana.com";
 const PASS_INITIALIZE: [u8; 8] = [175, 175, 109, 31, 13, 152, 155, 237];
 const PASS_ISSUE: [u8; 8] = [29, 88, 236, 137, 74, 17, 193, 144];
+const PASS_ERROR_PAUSED: u32 = 0xD003;
 const PASS_ERROR_REVOKED: u32 = 0xD004;
 const PASS_ERROR_EXPIRED: u32 = 0xD005;
 const PASS_ERROR_NOT_ELIGIBLE: u32 = 0xD007;
@@ -55,7 +58,7 @@ const PASS_ERROR_UNAUTHORIZED_REGISTRAR: u32 = 0xD00B;
 const ENTRY_FEE: u64 = 20_000_000;
 const PRIZE: u64 = 50_000_000;
 /// Short enough to watch an attestation expire during the run.
-const MAX_AGE_SLOTS: u64 = 60;
+const MAX_AGE_SLOTS: u64 = 90;
 
 fn game_pda(seeds: &[&[u8]]) -> Pubkey {
     Pubkey::find_program_address(seeds, &xfchess_game::ID).0
@@ -341,6 +344,23 @@ impl Tournaments {
         }
     }
 
+    fn pause_ix(&self, mint: &Pubkey, authority: &Pubkey, is_paused: bool) -> Instruction {
+        Instruction {
+            program_id: xfchess_game::ID,
+            accounts: xfchess_game::__client_accounts_set_pass_paused::SetPassPaused {
+                tournament: self.tournament,
+                pass_binding: self.binding,
+                pass_mint: *mint,
+                pass_config: config_pda(mint),
+                registrar: game_pda(&[PASS_REGISTRAR_SEED]),
+                authority: *authority,
+                pass_program: XFCHESS_PASS_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+            data: xfchess_game::instruction::SetPassPaused { tournament_id: self.id, is_paused }.data(),
+        }
+    }
+
     fn revoke_ix(&self, mint: &Pubkey, player: &Pubkey, authority: &Pubkey) -> Instruction {
         Instruction {
             program_id: xfchess_game::ID,
@@ -358,6 +378,19 @@ impl Tournaments {
             .to_account_metas(None),
             data: xfchess_game::instruction::RevokePassEligibility { tournament_id: self.id }.data(),
         }
+    }
+}
+
+fn verify_profile_ix(player: &Pubkey, kyc: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: xfchess_game::ID,
+        accounts: xfchess_game::__client_accounts_verify_profile::VerifyProfile {
+            player_profile: game_pda(&[b"profile", player.as_ref()]),
+            admin: *kyc,
+            player: *player,
+        }
+        .to_account_metas(None),
+        data: xfchess_game::instruction::VerifyProfile {}.data(),
     }
 }
 
@@ -394,6 +427,7 @@ fn the_deployed_programs_attest_expire_revoke_and_burn_passes() -> TestResult {
     let rpc = RpcClient::new_with_commitment(DEVNET.to_string(), CommitmentConfig::confirmed());
     let vps = keypair_from_env("VPS_KEYPAIR")?;
     let payer = keypair_from_env("PAYER_KEYPAIR")?;
+    let kyc = keypair_from_env("KYC_KEYPAIR")?;
     let (registered, expiring, revoked) = (Keypair::new(), Keypair::new(), Keypair::new());
     let id = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let main = Tournaments::new(id);
@@ -552,6 +586,21 @@ fn the_deployed_programs_attest_expire_revoke_and_burn_passes() -> TestResult {
         pass_transfer_ix(&mint, &treasury.pubkey(), &accounts[to].pubkey(), &payer.pubkey(), &owner.pubkey())
     };
 
+    // An unverified profile cannot be attested; the KYC authority then verifies all three players.
+    let error = landed_failure(
+        &rpc,
+        "attest a profile that is not KYC-verified",
+        &[main.bridge_ix(&mint, &registered.pubkey(), &payer.pubkey())],
+        &payer,
+        &[],
+    )?;
+    assert_eq!(custom(&error), game_code(GameErrorCode::ProfileNotVerified));
+    let verifications: Vec<Instruction> = [&registered, &expiring, &revoked]
+        .iter()
+        .map(|player| verify_profile_ix(&player.pubkey(), &kyc.pubkey()))
+        .collect();
+    send(&rpc, "the KYC authority verifies the three profiles", &verifications, &payer, &[&kyc])?;
+
     // Refusals: the hook before attestation, and the bridge and pass program on bad input.
     let error = landed_failure(&rpc, "pass transfer before attestation", &[transfer(0, &registered)?], &payer, &[])?;
     assert_eq!(custom(&error), Some(PASS_ERROR_NOT_ELIGIBLE));
@@ -645,6 +694,10 @@ fn the_deployed_programs_attest_expire_revoke_and_burn_passes() -> TestResult {
     assert_eq!(custom(&error), Some(PASS_ERROR_EXPIRED));
     send(&rpc, "refresh player 2's attestation", &[main.bridge_ix(&mint, &expiring.pubkey(), &payer.pubkey())], &payer, &[])?;
     assert!(record_fields(&rpc, &mint, &expiring.pubkey())?.1 > attested_at);
+    send(&rpc, "the organizer pauses pass transfers", &[main.pause_ix(&mint, &vps.pubkey(), true)], &vps, &[])?;
+    let error = landed_failure(&rpc, "pass transfer while paused", &[transfer(1, &expiring)?], &payer, &[])?;
+    assert_eq!(custom(&error), Some(PASS_ERROR_PAUSED));
+    send(&rpc, "the organizer resumes pass transfers", &[main.pause_ix(&mint, &vps.pubkey(), false)], &vps, &[])?;
     send(&rpc, "transfer a pass to player 2 after the refresh", &[transfer(1, &expiring)?], &payer, &[])?;
     assert_eq!(token_balance(&rpc, &accounts[1].pubkey())?, 1);
 

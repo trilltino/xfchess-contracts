@@ -6417,6 +6417,185 @@
       ]
     },
     {
+      "name": "set_pass_paused",
+      "docs": [
+        "Organizer-only: pauses or resumes every transfer of the tournament's pass through the",
+        "registrar PDA. Redemption by registering is not affected."
+      ],
+      "discriminator": [
+        168,
+        121,
+        79,
+        106,
+        182,
+        88,
+        68,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "tournament",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  117,
+                  114,
+                  110,
+                  97,
+                  109,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "tournament_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pass_binding",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  95,
+                  112,
+                  97,
+                  115,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "tournament_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pass_mint"
+        },
+        {
+          "name": "pass_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pass_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                57,
+                114,
+                33,
+                190,
+                147,
+                1,
+                47,
+                76,
+                169,
+                49,
+                251,
+                160,
+                60,
+                207,
+                199,
+                47,
+                251,
+                132,
+                80,
+                157,
+                147,
+                120,
+                35,
+                120,
+                13,
+                34,
+                221,
+                66,
+                219,
+                230,
+                229,
+                216
+              ]
+            }
+          }
+        },
+        {
+          "name": "registrar",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  97,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "pass_program",
+          "address": "4sFBJCjU3QvoWZCfxdHJcGBCPjToTy2BzNK23wmRPaw9"
+        }
+      ],
+      "args": [
+        {
+          "name": "tournament_id",
+          "type": "u64"
+        },
+        {
+          "name": "is_paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "set_username",
       "discriminator": [
         103,
@@ -7935,6 +8114,11 @@
       "code": 6117,
       "name": "PassEligibilityRevoked",
       "msg": "This player's pass eligibility was revoked and cannot be refreshed."
+    },
+    {
+      "code": 6118,
+      "name": "ProfileNotVerified",
+      "msg": "The player's profile is not KYC-verified, so it cannot be attested for a pass."
     }
   ],
   "types": [

@@ -81,6 +81,12 @@ pub fn handler(ctx: Context<IssuePassEligibility>, tournament_id: u64) -> Result
         tournament.status == TournamentStatus::Registration,
         GameErrorCode::TournamentNotInRegistration
     );
+    // Only a profile the KYC authority has verified can be attested; an open profile is free to
+    // create, so without this any number of wallets could be attested.
+    require!(
+        ctx.accounts.player_profile.is_verified,
+        GameErrorCode::ProfileNotVerified
+    );
     let rating = display_rating(&ctx.accounts.player_profile, tournament.base_time_seconds)?;
     require!(
         (tournament.elo_min..=tournament.elo_max).contains(&rating),
