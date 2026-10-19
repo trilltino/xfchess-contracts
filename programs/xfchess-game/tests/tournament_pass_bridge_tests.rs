@@ -270,8 +270,10 @@ async fn create_token_account(
 ) -> Pubkey {
     let token_account = Keypair::new();
     let payer = ctx.payer.pubkey();
+    // The pass hook refuses a destination whose owner can be reassigned.
     let len = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[
         ExtensionType::TransferHookAccount,
+        ExtensionType::ImmutableOwner,
     ])
     .expect("length");
     let rent = ctx.banks_client.get_rent().await.expect("rent").minimum_balance(len);
@@ -283,6 +285,8 @@ async fn create_token_account(
             len as u64,
             &TOKEN_2022,
         ),
+        token_instruction::initialize_immutable_owner(&TOKEN_2022, &token_account.pubkey())
+            .expect("initialize immutable owner"),
         token_instruction::initialize_account3(&TOKEN_2022, &token_account.pubkey(), mint, owner)
             .expect("initialize account"),
     ];
@@ -339,9 +343,10 @@ async fn bound_pass_with(
 ) -> (Pubkey, Pubkey) {
     let mint = create_hooked_mint(ctx).await;
     let payer = ctx.payer.pubkey();
-    send_all(ctx, &[pass_initialize_ix(&mint, &payer, &payer)], &[]).await;
     let treasury = create_token_account(ctx, &mint, &payer, passes).await;
+    // The pass program and binding both need the supply fixed first.
     revoke_mint_authority(ctx, &mint).await;
+    send_all(ctx, &[pass_initialize_ix(&mint, &payer, &payer)], &[]).await;
     common::send(ctx, fixture.bind_ix(&mint), &[&fixture.authority])
         .await
         .expect("bind");
@@ -472,6 +477,7 @@ async fn the_bridge_refuses_unbound_tournaments_wrong_mints_and_wrong_programs()
     let player = fixture.players[0].0.pubkey();
     let payer = ctx.payer.pubkey();
     let mint = create_hooked_mint(&mut ctx).await;
+    revoke_mint_authority(&mut ctx, &mint).await;
     send_all(&mut ctx, &[pass_initialize_ix(&mint, &payer, &payer)], &[]).await;
 
     assert!(
@@ -481,7 +487,6 @@ async fn the_bridge_refuses_unbound_tournaments_wrong_mints_and_wrong_programs()
         "no binding"
     );
 
-    revoke_mint_authority(&mut ctx, &mint).await;
     common::send(&mut ctx, fixture.bind_ix(&mint), &[&fixture.authority])
         .await
         .expect("bind");
@@ -601,6 +606,7 @@ async fn the_bridge_only_attests_while_the_tournament_is_registering() {
     let player = fixture.players[0].0.pubkey();
     let payer = ctx.payer.pubkey();
     let mint = create_hooked_mint(&mut ctx).await;
+    revoke_mint_authority(&mut ctx, &mint).await;
     send_all(&mut ctx, &[pass_initialize_ix(&mint, &payer, &payer)], &[]).await;
     ctx.set_account(
         &binding_pda(),

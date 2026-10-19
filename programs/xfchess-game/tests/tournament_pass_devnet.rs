@@ -207,6 +207,7 @@ fn token_account_ixs(
 ) -> TestResult<Vec<Instruction>> {
     let len = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[
         ExtensionType::TransferHookAccount,
+        ExtensionType::ImmutableOwner,
     ])?;
     Ok(vec![
         system_instruction::create_account(
@@ -216,6 +217,7 @@ fn token_account_ixs(
             len as u64,
             &TOKEN_2022,
         ),
+        token_instruction::initialize_immutable_owner(&TOKEN_2022, &account.pubkey())?,
         token_instruction::initialize_account3(&TOKEN_2022, &account.pubkey(), mint, owner)?,
     ])
 }
@@ -519,33 +521,9 @@ fn the_deployed_programs_attest_expire_revoke_and_burn_passes() -> TestResult {
         )?;
     }
 
-    // A pass mint hooked by the deployed pass program, with the game's registrar PDA as registrar.
-    // Binding refuses it until the organizer can no longer mint.
+    // A pass mint hooked by the deployed pass program. The pass is initialized with the game's
+    // registrar PDA only after the supply is fixed, which the pass program and binding both need.
     let mint = create_hooked_mint(&rpc, &payer, "create the hooked pass mint")?;
-    let mut data = PASS_INITIALIZE.to_vec();
-    data.extend_from_slice(&id.to_le_bytes());
-    data.extend_from_slice(registrar.as_ref());
-    data.extend_from_slice(&1_000u32.to_le_bytes());
-    data.extend_from_slice(&1_400u32.to_le_bytes());
-    data.extend_from_slice(&MAX_AGE_SLOTS.to_le_bytes());
-    send(
-        &rpc,
-        "initialize the pass for the tournament",
-        &[Instruction {
-            program_id: XFCHESS_PASS_PROGRAM_ID,
-            accounts: vec![
-                AccountMeta::new(config_pda(&mint), false),
-                AccountMeta::new(pass_pda(&[b"extra-account-metas", mint.as_ref()]), false),
-                AccountMeta::new_readonly(mint, false),
-                AccountMeta::new_readonly(payer.pubkey(), true),
-                AccountMeta::new(payer.pubkey(), true),
-                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
-            ],
-            data,
-        }],
-        &payer,
-        &[],
-    )?;
     let treasury = Keypair::new();
     let mut ixs = token_account_ixs(&rpc, &payer.pubkey(), &treasury, &mint, &payer.pubkey())?;
     ixs.push(token_instruction::mint_to(&TOKEN_2022, &mint, &treasury.pubkey(), &payer.pubkey(), &[], 3)?);
@@ -570,6 +548,30 @@ fn the_deployed_programs_attest_expire_revoke_and_burn_passes() -> TestResult {
             &payer.pubkey(),
             &[],
         )?],
+        &payer,
+        &[],
+    )?;
+    let mut data = PASS_INITIALIZE.to_vec();
+    data.extend_from_slice(&id.to_le_bytes());
+    data.extend_from_slice(registrar.as_ref());
+    data.extend_from_slice(&1_000u32.to_le_bytes());
+    data.extend_from_slice(&1_400u32.to_le_bytes());
+    data.extend_from_slice(&MAX_AGE_SLOTS.to_le_bytes());
+    send(
+        &rpc,
+        "initialize the pass for the tournament",
+        &[Instruction {
+            program_id: XFCHESS_PASS_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(config_pda(&mint), false),
+                AccountMeta::new(pass_pda(&[b"extra-account-metas", mint.as_ref()]), false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new_readonly(payer.pubkey(), true),
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new_readonly(solana_system_interface::program::ID, false),
+            ],
+            data,
+        }],
         &payer,
         &[],
     )?;
