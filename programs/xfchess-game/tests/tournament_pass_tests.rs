@@ -284,6 +284,25 @@ async fn create_mint(ctx: &mut ProgramTestContext, hook: Option<Pubkey>, decimal
 }
 
 /// A token account of `mint` for `owner`, holding `amount`; `hooked` for hooked mints.
+/// Revokes the payer's mint authority so the pass supply is fixed, as binding requires.
+async fn revoke_mint_authority(ctx: &mut ProgramTestContext, mint: &Pubkey) {
+    let payer = ctx.payer.pubkey();
+    send_all(
+        ctx,
+        &[token_instruction::set_authority(
+            &TOKEN_2022,
+            mint,
+            None,
+            token_instruction::AuthorityType::MintTokens,
+            &payer,
+            &[],
+        )
+        .expect("set authority")],
+        &[],
+    )
+    .await;
+}
+
 async fn create_token_account(
     ctx: &mut ProgramTestContext,
     mint: &Pubkey,
@@ -413,6 +432,7 @@ async fn the_organizer_binds_a_hooked_zero_decimal_token_2022_mint() {
     let fixture = Fixture::new(vec![]);
     let mut ctx = fixture.start().await;
     let mint = create_mint(&mut ctx, Some(XFCHESS_PASS_PROGRAM_ID), 0).await;
+    revoke_mint_authority(&mut ctx, &mint).await;
 
     common::send(
         &mut ctx,
@@ -538,6 +558,7 @@ async fn bound() -> Bound {
     let mint = create_mint(&mut ctx, Some(XFCHESS_PASS_PROGRAM_ID), 0).await;
     let holder_pass = create_token_account(&mut ctx, &mint, &fixture.players[0].key(), true, 2).await;
     let empty_pass = create_token_account(&mut ctx, &mint, &fixture.players[1].key(), true, 0).await;
+    revoke_mint_authority(&mut ctx, &mint).await;
     common::send(
         &mut ctx,
         fixture.bind_ix(&fixture.authority.pubkey(), &mint),
@@ -653,6 +674,7 @@ async fn a_pass_does_not_override_the_rating_range() {
     let mut ctx = fixture.start().await;
     let mint = create_mint(&mut ctx, Some(XFCHESS_PASS_PROGRAM_ID), 0).await;
     let pass = create_token_account(&mut ctx, &mint, &fixture.players[0].key(), true, 1).await;
+    revoke_mint_authority(&mut ctx, &mint).await;
     common::send(
         &mut ctx,
         fixture.bind_ix(&fixture.authority.pubkey(), &mint),
@@ -689,4 +711,39 @@ async fn a_tournament_without_a_binding_ignores_supplied_pass_accounts() {
     .await
     .expect("no binding, no pass needed");
     assert_eq!(token_balance(&mut ctx, pass).await, 1, "nothing is burned without a binding");
+}
+
+#[tokio::test]
+async fn binding_needs_a_fixed_supply_no_larger_than_the_player_limit() {
+    let fixture = Fixture::new(vec![]);
+    let mut ctx = fixture.start().await;
+    let mint = create_mint(&mut ctx, Some(XFCHESS_PASS_PROGRAM_ID), 0).await;
+    let organizer = fixture.authority.pubkey();
+
+    let open = common::send(&mut ctx, fixture.bind_ix(&organizer, &mint), &[&fixture.authority])
+        .await
+        .expect_err("an organizer who can still mint");
+    assert_eq!(
+        common::custom_code(&open),
+        code(GameErrorCode::PassMintAuthorityActive)
+    );
+
+    // The fixture allows 8 players; 9 passes would outnumber the seats.
+    create_token_account(&mut ctx, &mint, &Pubkey::new_unique(), true, 9).await;
+    revoke_mint_authority(&mut ctx, &mint).await;
+    ctx.last_blockhash = ctx.get_new_latest_blockhash().await.expect("blockhash");
+    let oversupplied =
+        common::send(&mut ctx, fixture.bind_ix(&organizer, &mint), &[&fixture.authority])
+            .await
+            .expect_err("more passes than seats");
+    assert_eq!(
+        common::custom_code(&oversupplied),
+        code(GameErrorCode::PassSupplyExceedsPlayers)
+    );
+    assert!(ctx
+        .banks_client
+        .get_account(binding_pda().0)
+        .await
+        .expect("lookup")
+        .is_none());
 }

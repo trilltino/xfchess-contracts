@@ -5433,6 +5433,252 @@
       "args": []
     },
     {
+      "name": "revoke_pass_eligibility",
+      "docs": [
+        "Organizer-only: revokes a player's pass eligibility through the registrar PDA, so the",
+        "pass can no longer be transferred to them. A revoked record is never refreshed."
+      ],
+      "discriminator": [
+        133,
+        120,
+        26,
+        101,
+        140,
+        187,
+        12,
+        81
+      ],
+      "accounts": [
+        {
+          "name": "tournament",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  117,
+                  114,
+                  110,
+                  97,
+                  109,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "tournament_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pass_binding",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  95,
+                  112,
+                  97,
+                  115,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "tournament_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player"
+        },
+        {
+          "name": "pass_mint"
+        },
+        {
+          "name": "pass_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pass_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                57,
+                114,
+                33,
+                190,
+                147,
+                1,
+                47,
+                76,
+                169,
+                49,
+                251,
+                160,
+                60,
+                207,
+                199,
+                47,
+                251,
+                132,
+                80,
+                157,
+                147,
+                120,
+                35,
+                120,
+                13,
+                34,
+                221,
+                66,
+                219,
+                230,
+                229,
+                216
+              ]
+            }
+          }
+        },
+        {
+          "name": "eligibility_record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  108,
+                  105,
+                  103,
+                  105,
+                  98,
+                  105,
+                  108,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pass_mint"
+              },
+              {
+                "kind": "account",
+                "path": "player"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                57,
+                114,
+                33,
+                190,
+                147,
+                1,
+                47,
+                76,
+                169,
+                49,
+                251,
+                160,
+                60,
+                207,
+                199,
+                47,
+                251,
+                132,
+                80,
+                157,
+                147,
+                120,
+                35,
+                120,
+                13,
+                34,
+                221,
+                66,
+                219,
+                230,
+                229,
+                216
+              ]
+            }
+          }
+        },
+        {
+          "name": "registrar",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  115,
+                  115,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  97,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "pass_program",
+          "address": "4sFBJCjU3QvoWZCfxdHJcGBCPjToTy2BzNK23wmRPaw9"
+        }
+      ],
+      "args": [
+        {
+          "name": "tournament_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "revoke_session",
       "discriminator": [
         86,
@@ -7674,6 +7920,21 @@
       "code": 6114,
       "name": "InvalidPassMint",
       "msg": "A pass mint must be a zero-decimal Token-2022 mint hooked by the xfchess_pass program."
+    },
+    {
+      "code": 6115,
+      "name": "PassMintAuthorityActive",
+      "msg": "A pass mint must have its mint authority revoked so the supply is fixed."
+    },
+    {
+      "code": 6116,
+      "name": "PassSupplyExceedsPlayers",
+      "msg": "A pass mint's supply must not exceed the tournament's player limit."
+    },
+    {
+      "code": 6117,
+      "name": "PassEligibilityRevoked",
+      "msg": "This player's pass eligibility was revoked and cannot be refreshed."
     }
   ],
   "types": [

@@ -12,6 +12,8 @@ use anchor_lang::solana_program::{
 /// the first 8 bytes of sha256("global:<name>").
 const ISSUE_ELIGIBILITY_DISCRIMINATOR: [u8; 8] = [29, 88, 236, 137, 74, 17, 193, 144];
 const REFRESH_ELIGIBILITY_DISCRIMINATOR: [u8; 8] = [18, 227, 118, 61, 5, 162, 20, 209];
+/// Offset of `is_revoked` in the pass program's `EligibilityRecord`.
+const REVOKED_FLAG_OFFSET: usize = 85;
 
 /// Attests a player's rating to the tournament's pass program. This program is the pass
 /// registrar: the rating comes from the player's own `PlayerProfile`, never from the caller, and
@@ -87,6 +89,20 @@ pub fn handler(ctx: Context<IssuePassEligibility>, tournament_id: u64) -> Result
 
     let record = ctx.accounts.eligibility_record.to_account_info();
     let issuing = record.data_is_empty() && record.owner == &anchor_lang::system_program::ID;
+    if !issuing {
+        // The pass program clears a revocation on refresh, so a revoked record must not be
+        // refreshed from here. Layout: discriminator, bump, mint, player, rating, slot, revoked.
+        require_keys_eq!(
+            *record.owner,
+            XFCHESS_PASS_PROGRAM_ID,
+            GameErrorCode::InvalidAccountOwner
+        );
+        let data = record.try_borrow_data()?;
+        require!(
+            data.get(REVOKED_FLAG_OFFSET) == Some(&0),
+            GameErrorCode::PassEligibilityRevoked
+        );
+    }
     let mut data = Vec::with_capacity(12);
     data.extend_from_slice(if issuing {
         &ISSUE_ELIGIBILITY_DISCRIMINATOR

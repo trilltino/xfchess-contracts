@@ -81,7 +81,7 @@ pub use governance_ix::{ClaimStaleDispute, DisputeGame, RecoverStuckDelegation, 
 pub use moves_ix::{GlobalRecordMove, RecordMove};
 pub use tournament_ix::{
     AdvanceRound, AdvanceWinner, AuthorizeTournamentSessionArgs, AuthorizeTournamentSessionCtx,
-    BindTournamentPass, IssuePassEligibility,
+    BindTournamentPass, IssuePassEligibility, RevokePassEligibility,
     CancelTournament, ClaimTournamentPrize, CloseTournament, CompleteSwissTournament,
     DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize, InitializeMatch,
     InitializeShardsMedium, InitializeShardsSmall, InitializeTournament,
@@ -208,6 +208,9 @@ pub mod __client_accounts_bind_tournament_pass {
 }
 pub mod __client_accounts_issue_pass_eligibility {
     pub use crate::tournament_ix::registration::issue_pass_eligibility::__client_accounts_issue_pass_eligibility::*;
+}
+pub mod __client_accounts_revoke_pass_eligibility {
+    pub use crate::tournament_ix::registration::revoke_pass_eligibility::__client_accounts_revoke_pass_eligibility::*;
 }
 pub mod __client_accounts_leave_tournament {
     pub use crate::tournament_ix::registration::leave::__client_accounts_leave_tournament::*;
@@ -709,6 +712,12 @@ pub mod xfchess_game {
     /// refreshing their eligibility so a pass can be transferred to them. Anyone may call it.
     pub fn issue_pass_eligibility(ctx: Context<IssuePassEligibility>, tournament_id: u64) -> Result<()> {
         crate::tournament_ix::registration::issue_pass_eligibility::handler(ctx, tournament_id)
+    }
+
+    /// Organizer-only: revokes a player's pass eligibility through the registrar PDA, so the
+    /// pass can no longer be transferred to them. A revoked record is never refreshed.
+    pub fn revoke_pass_eligibility(ctx: Context<RevokePassEligibility>, tournament_id: u64) -> Result<()> {
+        crate::tournament_ix::registration::revoke_pass_eligibility::handler(ctx, tournament_id)
     }
 
     pub fn leave_tournament(ctx: Context<LeaveTournament>, tournament_id: u64) -> Result<()> {

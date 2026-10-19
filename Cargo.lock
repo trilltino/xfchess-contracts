@@ -10707,6 +10707,7 @@ dependencies = [
  "solana-program 3.0.0",
  "solana-program-test",
  "solana-rpc-client",
+ "solana-rpc-client-api",
  "solana-sdk",
  "solana-security-txt",
  "solana-system-interface 3.2.0",

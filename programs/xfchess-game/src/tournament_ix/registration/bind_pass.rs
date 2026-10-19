@@ -10,7 +10,9 @@ use anchor_spl::token_interface::Mint;
 
 /// Requires a tournament pass for every later registration. The mint must be a zero-decimal
 /// Token-2022 mint whose transfer hook is the xfchess_pass program, so passes can only move
-/// to wallets that program has approved. Only the organizer can bind, before anyone registers.
+/// to wallets that program has approved. The mint authority must already be revoked and the supply
+/// at most the player limit, so the organizer cannot mint extra passes. Only the organizer can
+/// bind, before anyone registers.
 #[derive(Accounts)]
 #[instruction(tournament_id: u64)]
 pub struct BindTournamentPass<'info> {
@@ -51,7 +53,10 @@ pub fn handler(ctx: Context<BindTournamentPass>, tournament_id: u64) -> Result<(
         tournament.num_registered_players == 0,
         GameErrorCode::InvalidTournamentStatus
     );
-    require_pass_mint(&ctx.accounts.pass_mint.to_account_info())?;
+    require_pass_mint(
+        &ctx.accounts.pass_mint.to_account_info(),
+        tournament.max_players,
+    )?;
 
     ctx.accounts.pass_binding.set_inner(TournamentPassBinding {
         tournament_id,
@@ -61,7 +66,7 @@ pub fn handler(ctx: Context<BindTournamentPass>, tournament_id: u64) -> Result<(
     Ok(())
 }
 
-fn require_pass_mint(mint: &AccountInfo) -> Result<()> {
+fn require_pass_mint(mint: &AccountInfo, max_players: u16) -> Result<()> {
     require_keys_eq!(
         *mint.owner,
         anchor_spl::token_2022::ID,
@@ -73,6 +78,15 @@ fn require_pass_mint(mint: &AccountInfo) -> Result<()> {
     require!(
         state.base.decimals == 0 && get_program_id(&state) == Some(XFCHESS_PASS_PROGRAM_ID),
         GameErrorCode::InvalidPassMint
+    );
+    // A fixed supply the organizer cannot inflate, with no more passes than seats.
+    require!(
+        state.base.mint_authority.is_none(),
+        GameErrorCode::PassMintAuthorityActive
+    );
+    require!(
+        state.base.supply <= u64::from(max_players),
+        GameErrorCode::PassSupplyExceedsPlayers
     );
     Ok(())
 }

@@ -320,6 +320,12 @@ pub enum GameErrorCode {
     PassNotHeld,
     #[msg("A pass mint must be a zero-decimal Token-2022 mint hooked by the xfchess_pass program.")]
     InvalidPassMint,
+    #[msg("A pass mint must have its mint authority revoked so the supply is fixed.")]
+    PassMintAuthorityActive,
+    #[msg("A pass mint's supply must not exceed the tournament's player limit.")]
+    PassSupplyExceedsPlayers,
+    #[msg("This player's pass eligibility was revoked and cannot be refreshed.")]
+    PassEligibilityRevoked,
 }
 
 pub use GameErrorCode as XfchessGameError;

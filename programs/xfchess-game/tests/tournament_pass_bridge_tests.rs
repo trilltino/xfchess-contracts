@@ -42,6 +42,7 @@ const WALLET: u64 = 100_000_000;
 const PASS_ISSUE: [u8; 8] = [29, 88, 236, 137, 74, 17, 193, 144];
 const PASS_INITIALIZE: [u8; 8] = [175, 175, 109, 31, 13, 152, 155, 237];
 const PASS_ERROR_UNAUTHORIZED_REGISTRAR: u32 = 0xD00B;
+const PASS_ERROR_REVOKED: u32 = 0xD004;
 
 fn tournament_pda(seed: &[u8]) -> Pubkey {
     Pubkey::find_program_address(&[seed, &ID.to_le_bytes()], &xfchess_game::ID).0
@@ -324,13 +325,62 @@ async fn record_fields(ctx: &mut ProgramTestContext, mint: &Pubkey, player: &Pub
 /// A pass mint owned by the payer, hooked by the pass program, initialized for the tournament
 /// with the game program's registrar PDA, and bound to the tournament.
 async fn bound_pass(fixture: &Fixture, ctx: &mut ProgramTestContext) -> Pubkey {
+    bound_pass_with(fixture, ctx, 0).await.0
+}
+
+/// As `bound_pass`, with `passes` minted to a payer-owned token account before the mint
+/// authority is revoked, as binding requires. Returns the mint and that account.
+async fn bound_pass_with(
+    fixture: &Fixture,
+    ctx: &mut ProgramTestContext,
+    passes: u64,
+) -> (Pubkey, Pubkey) {
     let mint = create_hooked_mint(ctx).await;
     let payer = ctx.payer.pubkey();
     send_all(ctx, &[pass_initialize_ix(&mint, &payer, &payer)], &[]).await;
+    let treasury = create_token_account(ctx, &mint, &payer, passes).await;
+    revoke_mint_authority(ctx, &mint).await;
     common::send(ctx, fixture.bind_ix(&mint), &[&fixture.authority])
         .await
         .expect("bind");
-    mint
+    (mint, treasury)
+}
+
+async fn revoke_mint_authority(ctx: &mut ProgramTestContext, mint: &Pubkey) {
+    let payer = ctx.payer.pubkey();
+    send_all(
+        ctx,
+        &[token_instruction::set_authority(
+            &TOKEN_2022,
+            mint,
+            None,
+            token_instruction::AuthorityType::MintTokens,
+            &payer,
+            &[],
+        )
+        .expect("set authority")],
+        &[],
+    )
+    .await;
+}
+
+fn revoke_ix(mint: &Pubkey, player: &Pubkey, authority: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: xfchess_game::ID,
+        accounts: xfchess_game::__client_accounts_revoke_pass_eligibility::RevokePassEligibility {
+            tournament: tournament_pda(b"tournament"),
+            pass_binding: binding_pda(),
+            player: *player,
+            pass_mint: *mint,
+            pass_config: config_pda(mint),
+            eligibility_record: record_pda(mint, player),
+            registrar: registrar_pda(),
+            authority: *authority,
+            pass_program: XFCHESS_PASS_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: xfchess_game::instruction::RevokePassEligibility { tournament_id: ID }.data(),
+    }
 }
 
 async fn bridge_error(
@@ -408,6 +458,7 @@ async fn the_bridge_refuses_unbound_tournaments_wrong_mints_and_wrong_programs()
         "no binding"
     );
 
+    revoke_mint_authority(&mut ctx, &mint).await;
     common::send(&mut ctx, fixture.bind_ix(&mint), &[&fixture.authority])
         .await
         .expect("bind");
@@ -489,11 +540,10 @@ fn transfer_pass_ix(
 async fn a_pass_reaches_only_players_the_bridge_attested() {
     let fixture = Fixture::new(&[1_500, 1_500]);
     let mut ctx = fixture.start().await;
-    let mint = bound_pass(&fixture, &mut ctx).await;
+    let (mint, treasury) = bound_pass_with(&fixture, &mut ctx, 2).await;
     let payer = ctx.payer.insecure_clone();
     let attested = fixture.players[0].0.pubkey();
     let unattested = fixture.players[1].0.pubkey();
-    let treasury = create_token_account(&mut ctx, &mint, &payer.pubkey(), 2).await;
     let attested_account = create_token_account(&mut ctx, &mint, &attested, 0).await;
     let unattested_account = create_token_account(&mut ctx, &mint, &unattested, 0).await;
 
@@ -545,4 +595,50 @@ async fn the_bridge_only_attests_while_the_tournament_is_registering() {
         bridge_error(&mut ctx, bridge_ix(&mint, &player, &payer), &[]).await,
         code(GameErrorCode::TournamentNotInRegistration)
     );
+}
+
+#[tokio::test]
+async fn the_organizer_revokes_eligibility_and_it_cannot_be_refreshed_back() {
+    let fixture = Fixture::new(&[1_500]);
+    let mut ctx = fixture.start().await;
+    let (mint, treasury) = bound_pass_with(&fixture, &mut ctx, 1).await;
+    let payer = ctx.payer.insecure_clone();
+    let player = fixture.players[0].0.pubkey();
+    let player_account = create_token_account(&mut ctx, &mint, &player, 0).await;
+    common::send(&mut ctx, bridge_ix(&mint, &player, &payer.pubkey()), &[])
+        .await
+        .expect("attest");
+
+    let stranger = Keypair::new();
+    ctx.set_account(&stranger.pubkey(), &common::system_account(WALLET).into());
+    assert_eq!(
+        bridge_error(&mut ctx, revoke_ix(&mint, &player, &stranger.pubkey()), &[&stranger]).await,
+        code(GameErrorCode::NotTournamentAuthority),
+        "only the organizer revokes"
+    );
+
+    common::send(
+        &mut ctx,
+        revoke_ix(&mint, &player, &fixture.authority.pubkey()),
+        &[&fixture.authority],
+    )
+    .await
+    .expect("the organizer revokes");
+    assert!(record_fields(&mut ctx, &mint, &player).await.2);
+
+    // The same instruction on the same blockhash would be deduplicated as already processed.
+    ctx.last_blockhash = ctx.get_new_latest_blockhash().await.expect("blockhash");
+    assert_eq!(
+        bridge_error(&mut ctx, bridge_ix(&mint, &player, &payer.pubkey()), &[]).await,
+        code(GameErrorCode::PassEligibilityRevoked),
+        "a revoked record is not refreshed back"
+    );
+    assert!(record_fields(&mut ctx, &mint, &player).await.2);
+
+    let transfer = transfer_pass_ix(&mint, &treasury, &player_account, &payer.pubkey(), &player);
+    let refused: TransactionError = common::send(&mut ctx, transfer, &[])
+        .await
+        .expect_err("a revoked wallet cannot receive the pass");
+    assert_eq!(common::custom_code(&refused), Some(PASS_ERROR_REVOKED));
+    assert_eq!(token_balance(&mut ctx, player_account).await, 0);
 }
