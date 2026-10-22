@@ -9,8 +9,7 @@ mod inner {
     pub fn handler_delegate_game(
         ctx: Context<DelegateGameCtx>,
         _game_id: u64,
-        // Retained for instruction ABI compatibility; no longer used to derive
-        // the commit cadence (that was a bug — it multiplied a unix timestamp).
+        // Retained for instruction ABI compatibility; unused for commit cadence.
         _valid_until: i64,
     ) -> Result<()> {
         let game_id_bytes = _game_id.to_le_bytes();
@@ -50,6 +49,11 @@ mod inner {
         let mut data = ctx.accounts.game.try_borrow_mut_data()?;
         let mut game_struct = Game::try_deserialize(&mut &data[..])?;
 
+        crate::lifecycle::guards::require_delegated(&game_struct)?;
+        crate::lifecycle::transitions::require_undelegation_authority(
+            &game_struct,
+            ctx.accounts.payer.key(),
+        )?;
         crate::lifecycle::transitions::mark_undelegated(&mut game_struct)?;
 
         let mut writer = &mut data[..];

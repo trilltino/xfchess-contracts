@@ -43,16 +43,8 @@ pub const XFCHESS_PASS_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
     0xfb, 0x84, 0x50, 0x9d, 0x93, 0x78, 0x23, 0x78, 0x0d, 0x22, 0xdd, 0x42, 0xdb, 0xe6, 0xe5, 0xd8,
 ]);
 
-// ---------------------------------------------------------------------------
-// Authority Constants (environment-gated)
-// ---------------------------------------------------------------------------
-// Mirrors Raydium's pattern: `declare_id!` and all privileged authority
-// constants are split by `localnet` / `devnet` / `mainnet` feature gates.
-//
-// * `localnet`  — fixed pubkeys for local program-test runs.
-// * `devnet`    — the current devnet deployment pubkeys (default feature).
-// * `mainnet`   — placeholder all-zeros keys; the const-assertion guard
-//   below prevents mainnet builds until keys are rotated.
+// Gate authority keys by localnet/devnet/mainnet. Mainnet placeholders are
+// blocked by compile-time assertions until real keys are configured.
 
 #[cfg(feature = "localnet")]
 mod pda_keys {
@@ -247,10 +239,7 @@ pub const CRANK_MAX_SLOT_DELAY: u64 = 300;
 
 pub const CRANK_MAX_SECONDS_EARLY: i64 = 60;
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Bounded durations (checked_add-safe)
-// ---------------------------------------------------------------------------
+// Bound durations so checked_add cannot overflow.
 
 /// Maximum session-key validity: 30 days.
 pub const MAX_SESSION_DURATION_SECS: i64 = 30 * 24 * 60 * 60;
