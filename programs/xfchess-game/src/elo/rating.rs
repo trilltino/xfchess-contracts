@@ -1,6 +1,8 @@
 use crate::errors::GameErrorCode;
 use crate::state::PlayerProfile;
 use anchor_lang::prelude::*;
+#[cfg(test)]
+use anyhow::Context as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RatingBucket {
@@ -33,6 +35,23 @@ pub fn rating_field_mut(profile: &mut PlayerProfile, bucket: RatingBucket) -> &m
     field
 }
 
+/// A profile's display rating for a time control. A bucket the player has not
+/// played yet (0.0, or anything non-finite) counts as the initial rating, the
+/// same value `rating_field_mut` seeds on first use.
+pub fn display_rating(profile: &PlayerProfile, base_time_seconds: u64) -> u32 {
+    let rating = match bucket_for_time_control(base_time_seconds) {
+        RatingBucket::Bullet => profile.elo_bullet,
+        RatingBucket::Blitz => profile.elo_blitz,
+        RatingBucket::Rapid => profile.elo_rapid,
+        RatingBucket::Classical => profile.elo_rating,
+    };
+    if rating.is_finite() && rating > 0.0 {
+        centiscale_to_display(rating)
+    } else {
+        INITIAL_ELO
+    }
+}
+
 pub const RATING_SCALE: u32 = 100;
 pub const INITIAL_ELO: u32 = 1200;
 pub const INITIAL_ELO_CENTISCALE: u32 = INITIAL_ELO * RATING_SCALE;
@@ -58,27 +77,6 @@ pub fn validate_external_rating(rating: u32) -> Result<()> {
     Ok(())
 }
 
-/// The profile's display Elo for the rating bucket of a time control. A stored rating of zero
-/// means the bucket was never touched and counts as the initial rating, as `rating_field_mut` does.
-pub fn display_rating(profile: &PlayerProfile, base_time_seconds: u64) -> Result<u32> {
-    let centiscale = match bucket_for_time_control(base_time_seconds) {
-        RatingBucket::Bullet => profile.elo_bullet,
-        RatingBucket::Blitz => profile.elo_blitz,
-        RatingBucket::Rapid => profile.elo_rapid,
-        RatingBucket::Classical => profile.elo_rating,
-    };
-    let centiscale = if centiscale == 0.0 {
-        INITIAL_ELO_CENTISCALE as f64
-    } else {
-        centiscale
-    };
-    require!(
-        centiscale.is_finite() && centiscale > 0.0,
-        GameErrorCode::InvalidArgument
-    );
-    Ok(centiscale_to_display(centiscale))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,9 +94,16 @@ mod tests {
     }
 
     #[test]
-    fn external_to_centiscale_scales_by_100() {
-        assert_eq!(external_to_centiscale(1500).unwrap(), 150000);
-        assert_eq!(external_to_centiscale(MIN_EXTERNAL_ELO).unwrap(), 10000);
+    fn external_to_centiscale_scales_by_100() -> anyhow::Result<()> {
+        assert_eq!(
+            external_to_centiscale(1500).context("required operation value")?,
+            150000
+        );
+        assert_eq!(
+            external_to_centiscale(MIN_EXTERNAL_ELO).context("required operation value")?,
+            10000
+        );
+        Ok(())
     }
 
     #[test]
@@ -158,6 +163,24 @@ mod tests {
     }
 
     #[test]
+    fn display_rating_reads_the_time_control_bucket() {
+        let profile = PlayerProfile {
+            elo_rating: 180_000.0,
+            elo_blitz: 150_049.0,
+            ..Default::default()
+        };
+        assert_eq!(display_rating(&profile, 300), 1500);
+        assert_eq!(display_rating(&profile, 0), 1800);
+        // Unplayed buckets and corrupt values fall back to the initial rating.
+        assert_eq!(display_rating(&profile, 60), INITIAL_ELO);
+        let corrupt = PlayerProfile {
+            elo_rapid: f64::NAN,
+            ..Default::default()
+        };
+        assert_eq!(display_rating(&corrupt, 600), INITIAL_ELO);
+    }
+
+    #[test]
     fn rating_field_mut_maps_each_bucket_to_its_own_field() {
         let mut profile = PlayerProfile::default();
         *rating_field_mut(&mut profile, RatingBucket::Bullet) = 111111.0;
@@ -192,8 +215,8 @@ mod tests {
             (0, 4_444),
         ] {
             assert_eq!(
-                display_rating(&profile, base_time_seconds).ok(),
-                Some(expected),
+                display_rating(&profile, base_time_seconds),
+                expected,
                 "base time {base_time_seconds}"
             );
         }
@@ -206,8 +229,8 @@ mod tests {
             elo_rapid: 150_050.0,
             ..Default::default()
         };
-        assert_eq!(display_rating(&profile, 300).ok(), Some(1_500));
-        assert_eq!(display_rating(&profile, 900).ok(), Some(1_501));
+        assert_eq!(display_rating(&profile, 300), 1_500);
+        assert_eq!(display_rating(&profile, 900), 1_501);
     }
 
     #[test]
@@ -215,20 +238,20 @@ mod tests {
         let profile = PlayerProfile::default();
         for base_time_seconds in [0, 60, 300, 900, 1_800] {
             assert_eq!(
-                display_rating(&profile, base_time_seconds).ok(),
-                Some(INITIAL_ELO)
+                display_rating(&profile, base_time_seconds),
+                INITIAL_ELO
             );
         }
     }
 
     #[test]
-    fn display_rating_refuses_ratings_that_are_not_positive_finite_numbers() {
+    fn display_rating_counts_unusable_ratings_as_the_initial_rating() {
         for stored in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
             let profile = PlayerProfile {
                 elo_blitz: stored,
                 ..Default::default()
             };
-            assert!(display_rating(&profile, 300).is_err(), "stored {stored}");
+            assert_eq!(display_rating(&profile, 300), INITIAL_ELO, "stored {stored}");
         }
     }
 }

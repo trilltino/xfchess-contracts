@@ -3,7 +3,7 @@
 # Dependency pins are copied verbatim from that repo's workspace Cargo.toml.
 [workspace]
 resolver = "2"
-members = ["programs/xfchess-game", "crates/nimzovich_engine"]
+members = ["programs/xfchess-game", "programs/xfchess-game-sbf", "crates/nimzovich_engine", "crates/xfchess-rules"]
 
 [workspace.package]
 edition = "2021"
@@ -29,7 +29,9 @@ thiserror = "=2.0.18"
 futures-lite = "=2.6.1"
 # Vendored from XFChess commit bfaa6a133^ (the last revision before the engine
 # was extracted to its own repo). Compiled into the program via `move-validation`.
-nimzovich_engine = { path = "crates/nimzovich_engine" }
+nimzovich_engine = { path = "crates/nimzovich_engine", default-features = false }
+xfchess-rules = { path = "crates/xfchess-rules" }
+anyhow = "=1.0.102"
 
 [profile.release]
 opt-level = 3
@@ -40,6 +42,12 @@ strip = true
 overflow-checks = true
 
 [profile.release.package.xfchess-game]
+opt-level = "z"
+codegen-units = 1
+
+# The deployable build compiles the program through this shim (programs/xfchess-game-sbf),
+# so its package name carries the size-optimised profile.
+[profile.release.package.xfchess-game-sbf]
 opt-level = "z"
 codegen-units = 1
 

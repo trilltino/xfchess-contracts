@@ -1,4 +1,5 @@
-mod common;
+use anyhow::Context as _;
+pub mod common;
 
 use anchor_lang::{AccountDeserialize, InstructionData, Space, ToAccountMetas};
 use common::*;
@@ -47,7 +48,7 @@ fn init_profile_ix(
 }
 
 #[tokio::test]
-async fn sponsored_profile_is_owned_by_player_not_backend() {
+async fn sponsored_profile_is_owned_by_player_not_backend() -> anyhow::Result<()> {
     let ctx = start(vec![]).await;
 
     // The player has ZERO SOL — the whole point of sponsorship.
@@ -58,22 +59,17 @@ async fn sponsored_profile_is_owned_by_player_not_backend() {
         system_instruction::transfer(&ctx.payer.pubkey(), &backend.pubkey(), 10_000_000_000);
     let mut fund_tx = Transaction::new_with_payer(&[fund_backend], Some(&ctx.payer.pubkey()));
     fund_tx.sign(&[&ctx.payer], ctx.last_blockhash);
-    ctx.banks_client.process_transaction(fund_tx).await.unwrap();
+    ctx.banks_client
+        .process_transaction(fund_tx)
+        .await
+        .context("required operation value")?;
 
     let profile = profile_pda(&player.pubkey());
     let username = "sponsoredplayer";
 
-    // Same rent computation the backend route performs via
-    // getMinimumBalanceForRentExemption before building this transaction.
-    // Unlike the backend (which can't depend on this crate and duplicates
-    // the size as a manually-kept-in-sync constant), this test can just use
-    // the real INIT_SPACE directly — it can never drift.
+    // Compute sponsored-profile rent from the program's actual INIT_SPACE constants.
     let rent = Rent::default();
-    let profile_rent = rent.minimum_balance(8 + PlayerProfile::INIT_SPACE); // discriminator + PlayerProfile::INIT_SPACE
-                                                                            // The account struct constraint is `space = 8 + UsernameRecord::LEN`, and
-                                                                            // UsernameRecord::LEN (48) already includes its own discriminator — so
-                                                                            // the real allocated space is 56 bytes, not 48. Caught by this test
-                                                                            // failing on-chain with "insufficient lamports" before this fix.
+    let profile_rent = rent.minimum_balance(8 + PlayerProfile::INIT_SPACE); // UsernameRecord allocation is 8 + LEN; LEN already includes its discriminator.
     let username_rent = rent.minimum_balance(8 + 48);
     let transfer_ix = system_instruction::transfer(
         &backend.pubkey(),
@@ -89,23 +85,26 @@ async fn sponsored_profile_is_owned_by_player_not_backend() {
     ctx.banks_client
         .process_transaction(tx)
         .await
-        .expect("sponsored init_profile should succeed");
+        .context("sponsored init_profile should succeed")?;
 
     // The profile PDA belongs to the PLAYER, not the backend that paid for it.
     let acc = ctx
         .banks_client
         .get_account(profile)
         .await
-        .unwrap()
-        .expect("profile account missing");
-    let decoded = PlayerProfile::try_deserialize(&mut &acc.data[..]).unwrap();
+        .context("required operation value")?
+        .context("profile account missing")?;
+    let decoded =
+        PlayerProfile::try_deserialize(&mut &acc.data[..]).context("required operation value")?;
     assert_eq!(decoded.authority, player.pubkey());
     assert_eq!(decoded.username, username);
 
-    // The player's wallet, which started at zero, ends back at zero — it
-    // received exactly the rent and immediately spent it on its own account
-    // creation, never needing to pre-fund anything itself.
-    let player_balance = ctx.banks_client.get_balance(player.pubkey()).await.unwrap();
+    // The zero-funded player receives and spends exactly the account-creation rent.
+    let player_balance = ctx
+        .banks_client
+        .get_balance(player.pubkey())
+        .await
+        .context("required operation value")?;
     assert_eq!(
         player_balance, 0,
         "player should not retain any of the sponsored funds"
@@ -117,9 +116,10 @@ async fn sponsored_profile_is_owned_by_player_not_backend() {
         .banks_client
         .get_balance(backend.pubkey())
         .await
-        .unwrap();
+        .context("required operation value")?;
     assert!(
         backend_balance < 10_000_000_000 - (profile_rent + username_rent),
         "backend must have paid the rent it fronted plus the tx fee"
     );
+    Ok(())
 }

@@ -1,4 +1,5 @@
-mod common;
+use anyhow::Context as _;
+pub mod common;
 
 use anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas};
 use solana_sdk::{
@@ -88,19 +89,14 @@ fn vps_authority_keypair() -> Option<Keypair> {
     read_keypair_file(path).ok()
 }
 
-// docs/PRE_MAINNET_E2E_PLAN.md §6.1: this is the file's *only* test, and its
-// entire assertion path is gated behind `keys/vps_authority.json` (devnet-only,
-// gitignored — not present on a fresh clone or CI runner). Before this
-// `#[ignore]`, that meant the file asserted nothing at all in default CI
-// while still reporting a clean pass. `#[ignore]` makes that show up as an
-// explicit "ignored" in `cargo test`'s summary instead. Run with
-// `cargo test -- --ignored` once the keyfile is provisioned locally/in CI.
+// Ignored test requires the real VPS authority key; provision it before
+// running cargo test -- --ignored.
 #[tokio::test]
-#[ignore = "needs keys/vps_authority.json (devnet-only, gitignored) — see docs/PRE_MAINNET_E2E_PLAN.md §6.1"]
-async fn register_player_deposits_entry_fee_and_adds_to_shard() {
+#[ignore = "needs keys/vps_authority.json (devnet-only, gitignored) — see docs/development/verification.md"]
+async fn register_player_deposits_entry_fee_and_adds_to_shard() -> anyhow::Result<()> {
     let Some(authority) = vps_authority_keypair() else {
         eprintln!("skip: keys/vps_authority.json not present");
-        return;
+        return Ok(());
     };
     let ctx = common::start(vec![]).await;
 
@@ -109,13 +105,15 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         system_instruction::transfer(&ctx.payer.pubkey(), &authority.pubkey(), 10_000_000_000);
     let mut tx = Transaction::new_with_payer(&[fund], Some(&ctx.payer.pubkey()));
     tx.sign(&[&ctx.payer], ctx.last_blockhash);
-    ctx.banks_client.process_transaction(tx).await.unwrap();
+    ctx.banks_client
+        .process_transaction(tx)
+        .await
+        .context("required operation value")?;
 
     let tournament_id: u64 = 999_777;
     const ENTRY_FEE: u64 = 20_000_000; // 0.02 SOL
     const PRIZE: u64 = 50_000_000; // 0.05 SOL guaranteed prize
 
-    // 1. initialize_tournament (max_players=2 -> single shard tier)
     let init_accounts =
         xfchess_game::__client_accounts_initialize_tournament::InitializeTournament {
             tournament: tournament_pda(tournament_id),
@@ -156,7 +154,6 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         data: init_data,
     };
 
-    // 2. initialize_tournament_escrow
     let escrow_accounts =
         xfchess_game::__client_accounts_initialize_tournament_escrow::InitializeTournamentEscrow {
             tournament: tournament_pda(tournament_id),
@@ -173,7 +170,6 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         data: escrow_data,
     };
 
-    // 3. initialize_shards_small
     let shards_accounts =
         xfchess_game::__client_accounts_initialize_shards_small::InitializeShardsSmall {
             tournament: tournament_pda(tournament_id),
@@ -195,7 +191,7 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
     ctx.banks_client
         .process_transaction(tx)
         .await
-        .expect("tournament setup (init + escrow + shards) should succeed");
+        .context("tournament setup (init + escrow + shards) should succeed")?;
 
     // 4. fund_sol_prize — guaranteed prize must be locked before anyone can register.
     let fund_prize_accounts = xfchess_game::__client_accounts_fund_sol_prize::FundSolPrize {
@@ -220,13 +216,13 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
     ctx.banks_client
         .process_transaction(tx)
         .await
-        .expect("fund_sol_prize should succeed");
+        .context("fund_sol_prize should succeed")?;
 
     let escrow_before = ctx
         .banks_client
         .get_balance(escrow_pda(tournament_id))
         .await
-        .unwrap();
+        .context("required operation value")?;
     assert!(
         escrow_before >= PRIZE,
         "escrow should hold the guaranteed prize before registration"
@@ -239,7 +235,10 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         system_instruction::transfer(&ctx.payer.pubkey(), &player.pubkey(), 5_000_000_000);
     let mut tx = Transaction::new_with_payer(&[fund_player], Some(&ctx.payer.pubkey()));
     tx.sign(&[&ctx.payer], ctx.last_blockhash);
-    ctx.banks_client.process_transaction(tx).await.unwrap();
+    ctx.banks_client
+        .process_transaction(tx)
+        .await
+        .context("required operation value")?;
 
     let init_profile = init_profile_ix(&player.pubkey(), "e2eregistrant");
     let mut tx = Transaction::new_with_payer(&[init_profile], Some(&player.pubkey()));
@@ -247,11 +246,15 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
     ctx.banks_client
         .process_transaction(tx)
         .await
-        .expect("init_profile should succeed");
+        .context("init_profile should succeed")?;
 
     // 6. THE thing this test exists to prove: register_player, built exactly
     // the way the fixed game client builds it.
-    let player_balance_before = ctx.banks_client.get_balance(player.pubkey()).await.unwrap();
+    let player_balance_before = ctx
+        .banks_client
+        .get_balance(player.pubkey())
+        .await
+        .context("required operation value")?;
     // The rating is read from the profile `init_profile` just created (1200 in the blitz
     // bucket of this 300-second tournament), so the caller passes no Elo.
     let register_ix = register_player_ix(tournament_id, &player.pubkey(), &authority.pubkey());
@@ -260,12 +263,16 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
     ctx.banks_client
         .process_transaction(tx)
         .await
-        .expect("register_player should succeed with the client's account layout");
+        .context("register_player should succeed with the client's account layout")?;
 
     // ── Assertions: the actual on-chain effects a real player should see ──
 
     // Entry fee really left the player's wallet (fee + entry_fee debited).
-    let player_balance_after = ctx.banks_client.get_balance(player.pubkey()).await.unwrap();
+    let player_balance_after = ctx
+        .banks_client
+        .get_balance(player.pubkey())
+        .await
+        .context("required operation value")?;
     assert!(
         player_balance_before - player_balance_after >= ENTRY_FEE,
         "player should have paid at least the entry fee (before={player_balance_before}, after={player_balance_after})"
@@ -276,7 +283,7 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         .banks_client
         .get_balance(escrow_pda(tournament_id))
         .await
-        .unwrap();
+        .context("required operation value")?;
     assert_eq!(
         escrow_after,
         escrow_before + ENTRY_FEE,
@@ -288,9 +295,10 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         .banks_client
         .get_account(shard_pda(tournament_id, 0))
         .await
-        .unwrap()
-        .unwrap();
-    let shard = TournamentPlayersShard::try_deserialize(&mut &shard_acc.data[..]).unwrap();
+        .context("required operation value")?
+        .context("required operation value")?;
+    let shard = TournamentPlayersShard::try_deserialize(&mut &shard_acc.data[..])
+        .context("required operation value")?;
     assert_eq!(shard.players, vec![player.pubkey()]);
     assert_eq!(shard.player_elos, vec![1200]);
 
@@ -299,8 +307,10 @@ async fn register_player_deposits_entry_fee_and_adds_to_shard() {
         .banks_client
         .get_account(tournament_pda(tournament_id))
         .await
-        .unwrap()
-        .unwrap();
-    let t = Tournament::try_deserialize(&mut &t_acc.data[..]).unwrap();
+        .context("required operation value")?
+        .context("required operation value")?;
+    let t =
+        Tournament::try_deserialize(&mut &t_acc.data[..]).context("required operation value")?;
     assert_eq!(t.num_registered_players, 1);
+    Ok(())
 }

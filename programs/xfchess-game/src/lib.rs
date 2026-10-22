@@ -1,18 +1,7 @@
 use anchor_lang::prelude::*;
 use ephemeral_rollups_sdk::cpi::undelegate_account;
-// ---------------------------------------------------------------------------
-// Solana security.txt metadata (mirrors the Raydium CLMM / CP-Swap / AMM pattern)
-// ---------------------------------------------------------------------------
-// Expands to a `#[no_mangle]` static in the `.security.txt` ELF section on BPF
-// targets, so explorers and `query-security-txt` read it straight off the
-// deployed program. Two macro constraints that already broke this build once:
-//   * the matcher is `($($name:ident: $value:expr),*)` - a trailing comma after
-//     the final field is a hard "unexpected end of macro invocation" error;
-//   * every `contacts` entry must be `<type>:<info>`, with type one of
-//     email | link | discord | telegram | twitter | other.
-// Values below are the canonical ones from SECURITY.md at the repo root.
-// `auditors` stays "None" until the external audit is signed off; then set it to
-// "<auditor>:<report url>".
+// Emit explorer-readable security.txt metadata from SECURITY.md. The macro
+// rejects a trailing comma, and contact entries require a supported type prefix.
 #[cfg(not(feature = "no-entrypoint"))]
 solana_security_txt::security_txt! {
     name: "XFChess",
@@ -83,24 +72,16 @@ pub use tournament_ix::{
     AdvanceRound, AdvanceWinner, AuthorizeTournamentSessionArgs, AuthorizeTournamentSessionCtx,
     BindTournamentPass, IssuePassEligibility, RevokePassEligibility, SetPassPaused,
     CancelTournament, ClaimTournamentPrize, CloseTournament, CompleteSwissTournament,
-    DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize, InitializeMatch,
+    CreateTournamentGame, DistributeTournamentPrizes, FundSolPrize, FundUsdcPrize, InitializeMatch,
     InitializeShardsMedium, InitializeShardsSmall, InitializeTournament,
     InitializeTournamentEscrow, InitializeTournamentShards, LeaveTournament, RecordMatchResult,
     RecordSwissResult, RegisterPlayer, RevokeTournamentSessionCtx, SessionCreateGame,
     SessionJoinGame, StartTournament, SwissMatchResult,
 };
 
-// ---------------------------------------------------------------------------
-// Anchor client-account re-exports (required macro glue — DO NOT REMOVE)
-// ---------------------------------------------------------------------------
-// Anchor's `#[derive(Accounts)]` macro generates `pub(crate)` modules named
-// `__client_accounts_<instruction>` beside each accounts struct. The Anchor
-// instruction dispatcher and IDL builder expect these to be reachable from the
-// crate root. Because they are `pub(crate)`, we create thin `pub mod` wrappers
-// here that re-export their contents. This is boilerplate — not business logic.
-// These modules will appear grayed-out in the IDE because nothing in Rust code
-// calls them directly; they are consumed by Anchor's generated entrypoint.
-// See: https://github.com/coral-xyz/anchor/issues/2697 (E0365 workaround)
+// Anchor-generated client account modules must be reachable from the crate
+// root. Re-export wrappers expose their pub(crate) contents to the dispatcher
+// and IDL builder. See https://github.com/coral-xyz/anchor/issues/2697.
 pub mod __client_accounts_init_profile {
     pub use crate::account_ix::profile::__client_accounts_init_profile::*;
 }
@@ -254,6 +235,9 @@ pub mod __client_accounts_record_swiss_result {
 pub mod __client_accounts_advance_round {
     pub use crate::tournament_ix::matches::advance_round::__client_accounts_advance_round::*;
 }
+pub mod __client_accounts_create_tournament_game {
+    pub use crate::tournament_ix::matches::create_tournament_game::__client_accounts_create_tournament_game::*;
+}
 pub mod __client_accounts_complete_swiss_tournament {
     pub use crate::tournament_ix::matches::complete_swiss::__client_accounts_complete_swiss_tournament::*;
 }
@@ -321,40 +305,23 @@ pub mod __client_accounts_update_config {
     pub use crate::account_ix::config_ix::__client_accounts_update_config::*;
 }
 
-#[allow(unused_imports)]
-use ephemeral_rollups_sdk::anchor::MagicProgram;
-
-// ---------------------------------------------------------------------------
-// Program ID - environment-gated (mirrors the Raydium devnet/mainnet split)
-// ---------------------------------------------------------------------------
-// localnet and devnet share a single deployment address: Anchor.toml pins
-// 8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU under both [programs.localnet]
-// and [programs.devnet].
+// Localnet and devnet share the deployment address pinned in Anchor.toml.
 #[cfg(any(feature = "localnet", feature = "devnet"))]
 declare_id!("8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU");
 
-// No environment feature selected (bare `cargo check`, host-side unit tests):
-// fall back to the devnet address, matching the `pda_keys` fallback in
-// constants.rs so the program ID and the authority keys can never disagree.
+// Without an environment feature, use the devnet ID to match the authority-key fallback.
 #[cfg(not(any(feature = "localnet", feature = "devnet", feature = "mainnet")))]
 declare_id!("8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU");
 
-// mainnet: not deployed yet, so the address is unknown. `pubkey!` (and therefore
-// `declare_id!`) only accepts a base58 *literal* - it expands to
-// `Pubkey::from_str_const`, so it cannot be sourced from an env var at build
-// time. A syntactically valid placeholder is declared instead; it decodes to the
-// ASCII bytes "XFChessMainnetProgramIdNotSetYet" and exists only so that a
-// mainnet build fails with the single clear guard message below rather than a
-// cascade of "cannot find value `ID`" errors from every PDA derivation here.
+// declare_id requires a literal. This mainnet placeholder lets the guard
+// emit one clear error until the deployed address is configured.
 #[cfg(all(
     feature = "mainnet",
     not(any(feature = "localnet", feature = "devnet"))
 ))]
 declare_id!("6wb25gLcgp7xNXhArZrSndcJiqx6vc7oKB1MJoWhtCFd");
 
-// Hard build guard. A panicking `const` initializer is evaluated at compile
-// time, so `--features mainnet` / `--features production` cannot build until the
-// real address above is filled in and constants.rs `_MAINNET_KEY_GUARD` passes.
+// Reject mainnet builds until the program address and authority keys are configured.
 #[cfg(all(
     feature = "mainnet",
     not(any(feature = "localnet", feature = "devnet"))
@@ -408,8 +375,6 @@ pub mod xfchess_game {
             bullet_rating,
         )
     }
-
-    // ── Solana Friends ────────────────────────────────────────────────────────
 
     pub fn send_friend_request(ctx: Context<SendFriendRequest>) -> Result<()> {
         crate::account_ix::friends_ix::send_request(ctx)
@@ -596,11 +561,7 @@ pub mod xfchess_game {
             &ctx.accounts.payer,
             &ctx.accounts.system_program,
         ];
-        // ephemeral_rollups_sdk::cpi::undelegate_account (0.16.2, our pinned
-        // version) already rejects a buffer that isn't this specific account's
-        // own canonical undelegate-buffer PDA internally (see
-        // is_canonical_undelegation_buffer in the SDK's cpi.rs) — no need to
-        // duplicate that check here.
+        // The SDK undelegate_account CPI validates the canonical buffer PDA.
         undelegate_account(
             delegated_account,
             &id(),
@@ -612,6 +573,10 @@ pub mod xfchess_game {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Matches the deployed Anchor instruction ABI"
+    )]
     pub fn initialize_tournament(
         ctx: Context<InitializeTournament>,
         tournament_id: u64,
@@ -678,6 +643,10 @@ pub mod xfchess_game {
         crate::tournament_ix::lifecycle::initialize_escrow::handler(ctx, tournament_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Matches the deployed Anchor instruction ABI"
+    )]
     pub fn initialize_match(
         ctx: Context<InitializeMatch>,
         tournament_id: u64,
@@ -701,12 +670,15 @@ pub mod xfchess_game {
     }
 
     /// Registers the signer. The rating is read from the signer's `PlayerProfile`; when the
-    /// tournament has a pass binding, one pass is burned as the ticket.
+    /// tournament has a pass binding, one pass is burned as the ticket and the signer's unrevoked
+    /// pass eligibility record must be the first remaining account.
     pub fn register_player(ctx: Context<RegisterPlayer>, tournament_id: u64) -> Result<()> {
         crate::tournament_ix::registration::register::handler(ctx, tournament_id)
     }
 
-    /// Organizer-only: requires a tournament pass for every later registration.
+    /// Organizer-only: requires a tournament pass for every later registration. The pass must
+    /// already be initialized with this program's pass registrar and a rating policy that covers
+    /// the tournament's range.
     pub fn bind_tournament_pass(ctx: Context<BindTournamentPass>, tournament_id: u64) -> Result<()> {
         crate::tournament_ix::registration::bind_pass::handler(ctx, tournament_id)
     }
@@ -718,7 +690,8 @@ pub mod xfchess_game {
     }
 
     /// Organizer-only: revokes a player's pass eligibility through the registrar PDA, so the
-    /// pass can no longer be transferred to them. A revoked record is never refreshed.
+    /// pass can no longer be transferred to them, and a pass they already hold can no longer be
+    /// redeemed to register. A revoked record is never refreshed.
     pub fn revoke_pass_eligibility(ctx: Context<RevokePassEligibility>, tournament_id: u64) -> Result<()> {
         crate::tournament_ix::registration::revoke_pass_eligibility::handler(ctx, tournament_id)
     }
@@ -827,18 +800,35 @@ pub mod xfchess_game {
         )
     }
 
-    pub fn advance_round(ctx: Context<AdvanceRound>, tournament_id: u64) -> Result<()> {
-        crate::tournament_ix::matches::advance_round::handler(ctx, tournament_id)
+    pub fn advance_round(
+        ctx: Context<AdvanceRound>,
+        tournament_id: u64,
+        boards_in_round: u16,
+    ) -> Result<()> {
+        crate::tournament_ix::matches::advance_round::handler(ctx, tournament_id, boards_in_round)
     }
 
     pub fn complete_swiss_tournament(
         ctx: Context<CompleteSwissTournament>,
         tournament_id: u64,
+        places: Vec<Pubkey>,
     ) -> Result<()> {
-        crate::tournament_ix::matches::complete_swiss::handler(ctx, tournament_id)
+        crate::tournament_ix::matches::complete_swiss::handler(ctx, tournament_id, places)
     }
 
-    // ── Tournament-scoped session delegation ───────────────────────────────
+    pub fn create_tournament_game(
+        ctx: Context<CreateTournamentGame>,
+        tournament_id: u64,
+        game_id: u64,
+        session_key: Pubkey,
+    ) -> Result<()> {
+        crate::tournament_ix::matches::create_tournament_game::handler(
+            ctx,
+            tournament_id,
+            game_id,
+            session_key,
+        )
+    }
 
     pub fn authorize_tournament_session(
         ctx: Context<AuthorizeTournamentSessionCtx>,
@@ -862,6 +852,10 @@ pub mod xfchess_game {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Matches the deployed Anchor instruction ABI"
+    )]
     pub fn session_create_game(
         ctx: Context<SessionCreateGame>,
         tournament_id: u64,
@@ -891,8 +885,6 @@ pub mod xfchess_game {
     ) -> Result<()> {
         crate::tournament_ix::session::session_join_game::handler(ctx, tournament_id, game_id)
     }
-
-    // ── Global persistent session delegation ──────────────────────────────────
 
     pub fn authorize_global_session(
         ctx: Context<AuthorizeGlobalSessionCtx>,
@@ -937,8 +929,6 @@ pub mod xfchess_game {
         crate::account_ix::treasury::handler(ctx, amount)
     }
 
-    // ── Player Session ────────────────────────────────────────────────────────
-
     pub fn create_session(
         ctx: Context<CreateSession>,
         session_key: Pubkey,
@@ -959,8 +949,6 @@ pub mod xfchess_game {
         crate::account_ix::fee_vault_ix::handler_revoke_session(ctx)
     }
 
-    // ── ELO Update ────────────────────────────────────────────────────────────
-
     pub fn update_elo(
         ctx: Context<UpdateElo>,
         opponent_rating: u32,
@@ -980,8 +968,6 @@ pub mod xfchess_game {
             won_amount,
         )
     }
-
-    // ── Crank (Scheduled Tasks) ─────────────────────────────────────────────────
 
     #[cfg(feature = "cranks")]
     pub fn schedule_time_check(

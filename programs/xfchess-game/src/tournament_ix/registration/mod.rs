@@ -1,6 +1,7 @@
 pub mod bind_pass;
 pub mod issue_pass_eligibility;
 pub mod leave;
+pub mod pass_accounts;
 pub mod revoke_pass_eligibility;
 pub mod set_pass_paused;
 pub mod register;

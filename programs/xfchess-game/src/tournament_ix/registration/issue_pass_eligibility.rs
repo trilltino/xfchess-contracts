@@ -87,7 +87,7 @@ pub fn handler(ctx: Context<IssuePassEligibility>, tournament_id: u64) -> Result
         ctx.accounts.player_profile.is_verified,
         GameErrorCode::ProfileNotVerified
     );
-    let rating = display_rating(&ctx.accounts.player_profile, tournament.base_time_seconds)?;
+    let rating = display_rating(&ctx.accounts.player_profile, tournament.base_time_seconds);
     require!(
         (tournament.elo_min..=tournament.elo_max).contains(&rating),
         GameErrorCode::EloOutOfRange

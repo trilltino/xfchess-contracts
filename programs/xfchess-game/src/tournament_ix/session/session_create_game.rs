@@ -86,6 +86,10 @@ pub struct SessionCreateGame<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Matches the deployed Anchor instruction ABI"
+)]
 pub fn handler(
     ctx: Context<SessionCreateGame>,
     tournament_id: u64,
@@ -223,7 +227,7 @@ pub fn handler(
     )?;
 
     let mut data = ctx.accounts.game.try_borrow_mut_data()?;
-    data[..8].copy_from_slice(&Game::DISCRIMINATOR);
+    data[..8].copy_from_slice(Game::DISCRIMINATOR);
     let mut writer = &mut data[8..];
     game.serialize(&mut writer)?;
 
