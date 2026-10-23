@@ -32,7 +32,10 @@ pub fn handler(ctx: Context<WithdrawExpiredWager>, _game_id: u64) -> Result<()> 
     );
     require!(game.white == player, GameErrorCode::NotGameCreator);
 
-    let expiration_time = game.created_at + 86400;
+    let expiration_time = game
+        .created_at
+        .checked_add(86400)
+        .ok_or(GameErrorCode::ArithmeticOverflow)?;
     require!(
         Clock::get()?.unix_timestamp > expiration_time,
         GameErrorCode::GameNotExpired

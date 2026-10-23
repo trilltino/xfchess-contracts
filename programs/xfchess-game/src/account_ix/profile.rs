@@ -10,7 +10,7 @@ use anchor_lang::Discriminator;
 #[derive(Accounts)]
 #[instruction(username: String, country: String, date_of_birth: i64)]
 pub struct InitProfile<'info> {
-    #[account(mut)]
+    #[account(mut, seeds = [PROFILE_SEED, player.key().as_ref()], bump)]
     pub player_profile: UncheckedAccount<'info>,
 
     #[account(
