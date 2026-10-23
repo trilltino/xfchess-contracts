@@ -561,6 +561,22 @@ pub mod xfchess_game {
             &ctx.accounts.payer,
             &ctx.accounts.system_program,
         ];
+        // Only Game PDAs are delegated by this program.
+        require!(
+            account_seeds.len() == 2
+                && account_seeds[0].as_slice() == crate::constants::GAME_SEED
+                && account_seeds[1].len() == 8,
+            crate::errors::GameErrorCode::InvalidArgument
+        );
+        let (game_pda, _) = Pubkey::find_program_address(
+            &[crate::constants::GAME_SEED, account_seeds[1].as_slice()],
+            ctx.program_id,
+        );
+        require_keys_eq!(
+            ctx.accounts.base_account.key(),
+            game_pda,
+            crate::errors::GameErrorCode::InvalidArgument
+        );
         // The SDK undelegate_account CPI validates the canonical buffer PDA.
         undelegate_account(
             delegated_account,
