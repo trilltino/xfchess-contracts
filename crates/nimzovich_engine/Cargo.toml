@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-thiserror = { workspace = true, optional = true }
-futures-lite = { workspace = true, optional = true }
-instant = { version = "0.1", features = ["wasm-bindgen"], optional = true }
-serde = { workspace = true, optional = true }
+thiserror = { version = "=2.0.21", optional = true }
+futures-lite = { version = "=2.6.1", optional = true }
+instant = { version = "=0.1.13", features = ["wasm-bindgen"], optional = true }
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
 
 [dev-dependencies]
-shakmaty = "0.27"
+shakmaty = "=0.30.2"
 
 [features]
 default = ["std", "search"]
