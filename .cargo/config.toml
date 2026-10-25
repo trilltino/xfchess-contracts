@@ -1,0 +1,3 @@
+﻿# Match the source repository's Windows native linker for program-test builds.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

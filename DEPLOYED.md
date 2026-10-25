@@ -1,36 +1,20 @@
-# Deployed program
+# Deployed devnet program
 
-| | |
+| Field | Verified value |
 |---|---|
-| Program ID | `8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU` (Solana devnet) |
-| Upgrade authority | `C1vn2MT7tZotZPjUJQDf9oo3dpZZ2tr7NxYLg8jTYgkw` |
-| Deployed at slot | 513888640 (upgrade tx `4WQeVRWGdNnz4TeEyLFBUv4agwFawCbtiZkuocCGgAtNrXr9WMXzsNHrV3ETntFzL6bawQCyoCb4UUi4nmipwa53`) |
-| Source | [trilltino/XFChess](https://github.com/trilltino/XFChess) commit `70a25c5c4e2d2fef18bb30f54f4260a74e27fadb`, `programs/xfchess-game` |
-| Deployed binary | 1,094,544 bytes, SHA-256 `f9a6d1c3f417c33e602a036fccdd8a01c970d092978319dd401c3192bc7f70c3` |
-| Instructions | 73 (every `sha256("global:<name>")[..8]` dispatch discriminator is present in the binary) |
+| Program | `8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU` (devnet) |
+| ProgramData | `DqgseskxrRYcgBpEks4jqh6eHbpg64SXxtGS1yhW9T7F` |
+| Authority | `C1vn2MT7tZotZPjUJQDf9oo3dpZZ2tr7NxYLg8jTYgkw` (unchanged) |
+| Finalized deployment slot | 514786564 |
+| Transaction | [Upgrade](https://explorer.solana.com/tx/3u4N77sN31qvdzx8PFHuRuDp1LGyMGKw7wQc62qmc4iXoCkhJsLq5j9nShjeQju8ZrVVnmudum1APmjyDL7u4FSj?cluster=devnet) |
+| Source | [XFChess fb168600806aca161ff423610bc9a6457476b494](https://github.com/trilltino/XFChess/commit/fb168600806aca161ff423610bc9a6457476b494) |
+| Artifact | 1,152,400 bytes; SHA-256 `f60ce59fc4ac7cd02a83e520c54b75ea9d44c6127a986fa8efb01b3e431f74fe` |
+| IDL | 82 instructions, old instruction data and Game/Profile layouts preserved |
 
-`programs/xfchess-game` in this repository is byte-identical to that commit. ProgramData on devnet is 1,424,064
-bytes because an earlier, larger deploy left zero padding; the code is the first 1,094,544 bytes.
+The program source is copied from the verified XFChess release. The extraction uses a local engine path; its independently rebuilt artifact must be recorded separately and is not presumed byte-identical. The deployed artifact was produced in XFChess with cargo-build-sbf 4.5.0, platform-tools v1.58 (Rust 1.95), arch v0, locked dependencies and default `cranks,move-validation,devnet` features. Solana CLI 4.3.2 performed the upgrade with preflight and activated-feature verification enabled, without extending allocation or changing authority.
 
-## Build
+Independent public-RPC verification checked the upgradeable loader, Program-to-ProgramData pointer, exact code hash and zero trailing padding. ProgramData allocation is 1,424,109 bytes including its 45-byte metadata header. See [release record](docs/security/release-20261025.md) and the public JSON evidence alongside it.
 
-Toolchain used for the deployed binary: `cargo-build-sbf 4.4.0`, platform-tools `v1.57`, `solana-cli 3.0.6`.
+The on-chain engine source matches the pinned engine at `08e430699297f7d13f94fae32128fc0bafedf778`. This extraction additionally migrates its differential test calls to the latest Shakmaty API; those edits do not alter the engine runtime.
 
-```
-cargo build-sbf --arch v0 --manifest-path programs/xfchess-game-sbf/Cargo.toml
-```
-
-The deployable build goes through the `xfchess-game-sbf` shim (same `lib.rs`, default features
-`cranks`, `move-validation`, `devnet`). `nimzovich_engine` is compiled with `default-features = false`
-(no_std, no search); the workspace entry must keep that setting or the engine is built with std and search.
-
-## Reproducing the hash
-
-A rebuild from this repository is not byte-identical to the deployed binary. It is 1,094,984 bytes, 440 more.
-Dependency versions, features and the program source are the same (checked with `cargo tree`). The one known
-difference is where the engine crate lives: the deployed build compiled `nimzovich_engine` from a pinned git
-checkout (`xfchess-contracts` rev `67932ae`, a byte-identical copy of `crates/nimzovich_engine`), so the source
-paths embedded in panic strings differ from the workspace-local ones (`crates\nimzovich_engine\src\…`). That
-accounts for part of the size difference (72 bytes of path prefix were measured); the remainder has not been
-attributed, so treat the two binaries as the same code but not as a verified byte-for-byte reproduction.
-To compare against the on-chain hash, build from the XFChess commit above, where the deployed binary was produced.
+Wiped historical games without a verified recovery identity remain locked. Strict all-transitive-latest and the remaining audit scopes are not declared complete. Production placeholder guards remain enabled; mainnet deployment was not performed.

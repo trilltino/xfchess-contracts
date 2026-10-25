@@ -2,3 +2,8 @@
 **/*-keypair.json
 keys/*.json
 .env
+
+# Generated verification/build output stays local.
+**/target/
+__pycache__/
+*.pyc

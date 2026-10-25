@@ -1,0 +1,21 @@
+name: Contracts
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.2
+      - name: Install SBF compiler
+        run: cargo install cargo-build-sbf --version 4.5.0 --locked
+      - name: Build SBF
+        run: NO_DNA=1 cargo build-sbf --arch v0 --tools-version v1.58 --manifest-path programs/xfchess-game-sbf/Cargo.toml -- --locked
+      - name: Fetch reviewed pass fixture
+        run: python3 docs/security/fetch_pass_fixture.py
+      - name: Contract tests
+        run: cargo test -p xfchess-game -p xfchess-client-compat --locked -- --test-threads=1
+      - name: Engine and rules tests
+        run: cargo test -p nimzovich_engine -p xfchess-rules --locked

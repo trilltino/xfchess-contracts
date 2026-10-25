@@ -82,12 +82,12 @@ fn ref_moves(fen: &str) -> Vec<(String, String)> {
     pos.legal_moves()
         .iter()
         .map(|m| {
-            let uci = UciMove::from_move(m, CastlingMode::Standard).to_string();
+            let uci = UciMove::from_move(*m, CastlingMode::Standard).to_string();
             let mut child = pos.clone();
-            child.play_unchecked(m);
+            child.play_unchecked(*m);
             // EnPassantMode::Always mirrors nimzovich, which records an EP target
             // after every double push regardless of capturability.
-            let child_fen = Fen::from_position(child, EnPassantMode::Always).to_string();
+            let child_fen = Fen::from_position(&child, EnPassantMode::Always).to_string();
             (uci, child_fen)
         })
         .collect()
@@ -129,7 +129,7 @@ fn drill(fen: &str, depth: u32, path: &str) -> bool {
         return true; // root cause found at this node
     }
 
-    // Move sets agree — descend into the first child whose subtree count differs.
+    // Move sets agree â€” descend into the first child whose subtree count differs.
     if depth > 1 {
         for (uci, child_fen) in &ref_mvs {
             let our_child = our_perft(child_fen, depth - 1);
@@ -146,7 +146,7 @@ fn drill(fen: &str, depth: u32, path: &str) -> bool {
         // Children all match after FEN round-trip, but this node's count differs:
         // the bug is state carried through make/unmake, not move generation.
         println!(
-            "  All children match via FEN re-import → make/unmake state corruption at this node."
+            "  All children match via FEN re-import â†’ make/unmake state corruption at this node."
         );
         return true;
     }
@@ -155,7 +155,7 @@ fn drill(fen: &str, depth: u32, path: &str) -> bool {
 }
 
 #[test]
-#[ignore = "diagnostic — run with --ignored --nocapture to locate movegen divergences"]
+#[ignore = "diagnostic â€” run with --ignored --nocapture to locate movegen divergences"]
 fn locate_divergences() {
     let cases: &[(&str, u32)] = &[
         (
@@ -167,7 +167,7 @@ fn locate_divergences() {
             4,
         ),
         ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4),
-        // Open Sicilian after 1.e4 c5 2.Nf3 Nc6 3.d4 cxd4 4.Nxd4 g6 — engine
+        // Open Sicilian after 1.e4 c5 2.Nf3 Nc6 3.d4 cxd4 4.Nxd4 g6 â€” engine
         // generated illegal e7d8 here in UCI match play (knight on d4).
         (
             "r1bqkbnr/pp1ppp1p/2n3p1/8/3NP3/8/PPP2PPP/RNBQKB1R w KQkq - 0 5",
@@ -182,10 +182,10 @@ fn locate_divergences() {
             found = true;
         } else {
             println!(
-                "  OK — matches reference ({} nodes)",
+                "  OK â€” matches reference ({} nodes)",
                 ref_perft(fen, *depth)
             );
         }
     }
-    assert!(!found, "divergences found — see output above");
+    assert!(!found, "divergences found â€” see output above");
 }
