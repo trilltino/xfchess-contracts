@@ -4,7 +4,7 @@ Standalone extraction of the XFChess Solana program. Source of truth: [trilltino
 
 Anchor/SPL 1.2.1, ER SDK 0.17.3, Solana Program 5.1.0, SDK 5.0.0 and Agave test/RPC 4.3.2. Program ID on devnet/localnet: `8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU`. Default features: `cranks`, `move-validation`, `devnet`.
 
-The strict all-transitive-latest requirement remains blocked by upstream constraints and the noncompiling published bincode 3.0.0. Findings, advisories and verification limits are recorded in [SECURITY_FINDINGS.md](SECURITY_FINDINGS.md). Mainnet placeholders intentionally fail production compilation. This repository is not an independent security sign-off.
+The strict all-transitive-latest requirement remains blocked by upstream constraints and the noncompiling published bincode 3.0.0. Findings, advisories and verification limits are recorded in [the verification record](docs/security/verification-20261024.md). Mainnet placeholders intentionally fail production compilation. This repository is not an independent security sign-off.
 
 | Path | Contents |
 |---|---|
