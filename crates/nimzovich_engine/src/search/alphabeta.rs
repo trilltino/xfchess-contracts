@@ -208,8 +208,8 @@ fn search(
         r += ((eval - beta) as i32 / 200).min(3);
         r += improving as i32;
 
-        crate::hash::toggle_turn(game);
-        let nm_score = -search(
+        let old_ep = crate::search::make_unmake::make_null_move(game);
+        let nm_result = search(
             game,
             NodeType::NonPv,
             depth - r,
@@ -219,8 +219,9 @@ fn search(
             !cut_node,
             ply + 1,
             true,
-        )?;
-        crate::hash::toggle_turn(game);
+        );
+        crate::search::make_unmake::unmake_null_move(game, old_ep);
+        let nm_score = -nm_result?;
 
         if nm_score >= beta {
             return Ok(nm_score);

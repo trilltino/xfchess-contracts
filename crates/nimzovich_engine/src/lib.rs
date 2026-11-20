@@ -96,6 +96,9 @@ mod utils;
 pub mod on_chain;
 pub mod on_chain_attack;
 pub mod on_chain_moves;
+pub mod on_chain_replay;
+pub use xfchess_adjudication as adjudication;
+pub mod on_chain_rules;
 
 #[cfg(feature = "std")]
 mod pgn;

@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "2"
-members = ["programs/xfchess-game", "programs/xfchess-game-sbf", "crates/nimzovich_engine", "crates/xfchess-rules", "crates/xfchess-client-compat"]
+members = ["programs/xfchess-game", "programs/xfchess-game-sbf", "crates/nimzovich_engine", "crates/xfchess-rules", "crates/xfchess-adjudication", "crates/xfchess-client-compat"]
 
 [workspace.package]
 edition = "2021"
@@ -19,7 +19,7 @@ async-trait = "=0.1.92"
 
 base64 = "=0.23.1"
 ephemeral-rollups-sdk = { version = "=0.17.3", default-features = false, features = ["instruction", "solana-system-interface"] }
-nimzovich_engine = { path = "crates/nimzovich_engine", default-features = false }
+nimzovich_engine = { path = "crates/nimzovich_engine", default-features = false, features = ["account-bytes"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 solana-program = "=5.1.0"

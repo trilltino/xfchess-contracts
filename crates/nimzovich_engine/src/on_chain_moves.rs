@@ -97,11 +97,12 @@ pub fn parse_uci(mv: &[u8; 5]) -> Result<(i8, i8, i8), ()> {
     let dst = dst_rank * 8 + dst_file;
 
     let promo: i8 = match mv[4] {
-        b'q' | b'Q' => QUEEN_ID,
-        b'r' | b'R' => ROOK_ID,
-        b'b' | b'B' => BISHOP_ID,
-        b'n' | b'N' => KNIGHT_ID,
-        _ => 0,
+        b'q' => QUEEN_ID,
+        b'r' => ROOK_ID,
+        b'b' => BISHOP_ID,
+        b'n' => KNIGHT_ID,
+        0 | b' ' => 0,
+        _ => return Err(()),
     };
 
     Ok((src, dst, promo))
@@ -127,6 +128,7 @@ pub fn validate_and_apply_sq(
     dst: i8,
     promo: i8,
 ) -> Result<MoveOutcome, ()> {
+    crate::on_chain_rules::validate_on_chain_game(g).map_err(|_| ())?;
     if src < 0 || src >= 64 || dst < 0 || dst >= 64 {
         return Err(());
     }
@@ -144,6 +146,16 @@ pub fn validate_and_apply_sq(
 
     let piece_type = piece.abs();
     let dst_piece = g.board[dst as usize];
+
+    // Promotion is an explicit, legal part of the move. A suffix on any other
+    // move, a missing choice, and promotion to a king/pawn are illegal.
+    let promotes = piece_type == PAWN_ID && (dst / 8 == 0 || dst / 8 == 7);
+    if (promotes && !matches!(promo, KNIGHT_ID | BISHOP_ID | ROOK_ID | QUEEN_ID))
+        || (!promotes && promo != 0)
+        || dst_piece.abs() == KING_ID
+    {
+        return Err(());
+    }
 
     // Can't capture own piece
     if dst_piece != 0 && (dst_piece > 0) == (color > 0) {
@@ -220,7 +232,11 @@ fn is_pawn_move_valid(g: &OnChainGame, src: i8, dst: i8, color: i8) -> bool {
         if dst_piece != 0 && (dst_piece > 0) != (color > 0) {
             return true; // Normal capture
         }
-        if g.ep_target == dst {
+        if dst_piece == 0
+            && g.ep_target == dst
+            && src_rank == if color > 0 { 4 } else { 3 }
+            && g.board[(dst - dir) as usize] == -color * PAWN_ID
+        {
             return true; // En passant
         }
     }
@@ -298,6 +314,7 @@ fn is_castling_valid(g: &OnChainGame, src: i8, dst: i8, color: i8) -> bool {
         if dst == 6 {
             // White kingside
             (g.castling & CASTLE_WK != 0)
+                && g.board[7] == W_ROOK
                 && g.board[5] == 0
                 && g.board[6] == 0
                 && !is_in_check_fast(g, color)
@@ -306,6 +323,7 @@ fn is_castling_valid(g: &OnChainGame, src: i8, dst: i8, color: i8) -> bool {
         } else if dst == 2 {
             // White queenside
             (g.castling & CASTLE_WQ != 0)
+                && g.board[0] == W_ROOK
                 && g.board[1] == 0
                 && g.board[2] == 0
                 && g.board[3] == 0
@@ -322,6 +340,7 @@ fn is_castling_valid(g: &OnChainGame, src: i8, dst: i8, color: i8) -> bool {
         if dst == 62 {
             // Black kingside
             (g.castling & CASTLE_BK != 0)
+                && g.board[63] == B_ROOK
                 && g.board[61] == 0
                 && g.board[62] == 0
                 && !is_in_check_fast(g, color)
@@ -330,6 +349,7 @@ fn is_castling_valid(g: &OnChainGame, src: i8, dst: i8, color: i8) -> bool {
         } else if dst == 58 {
             // Black queenside
             (g.castling & CASTLE_BQ != 0)
+                && g.board[56] == B_ROOK
                 && g.board[57] == 0
                 && g.board[58] == 0
                 && g.board[59] == 0

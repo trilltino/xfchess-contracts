@@ -10,6 +10,7 @@ pub mod common;
 
 use anyhow::Context as _;
 
+use crate::agave::{ProgramTest, ProgramTestContext};
 use anchor_lang::{
     solana_program::{program_option::COption, program_pack::Pack},
     AccountDeserialize, InstructionData, Space, ToAccountMetas,
@@ -22,7 +23,6 @@ use anchor_spl::token_2022::{
     },
     ID as TOKEN_2022,
 };
-use crate::agave::{ProgramTest, ProgramTestContext};
 use solana_sdk::{
     account::Account,
     instruction::Instruction,
@@ -181,8 +181,8 @@ impl Player {
     fn profile(&self) -> PlayerProfile {
         PlayerProfile {
             authority: self.key(),
-            elo_blitz: f64::from(self.blitz) * 100.0,
-            elo_rating: f64::from(self.classical) * 100.0,
+            elo_blitz: self.blitz * 100,
+            elo_rating: self.classical * 100,
             ..Default::default()
         }
     }

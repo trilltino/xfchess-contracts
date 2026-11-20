@@ -6,13 +6,12 @@ use solana_sdk::{
 };
 use solana_system_interface::program as system_program;
 
-pub const PROGRAM_ID: &str = "8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU";
+pub const PROGRAM_ID: &str = "6idpQeH5YzXUT4sg8mG8dzxdK7ytmxfEyWkzUcNJJv4N";
 
 pub const GAME_SEED: &[u8] = b"game";
 pub const MOVE_LOG_SEED: &[u8] = b"move_log";
 pub const PROFILE_SEED: &[u8] = b"profile";
 pub const USERNAME_SEED: &[u8] = b"username";
-pub const FRIENDSHIP_SEED: &[u8] = b"friendship";
 pub const WAGER_ESCROW_SEED: &[u8] = b"escrow";
 pub const SESSION_DELEGATION_SEED: &[u8] = b"session_delegation";
 pub const TOURNAMENT_SEED: &[u8] = b"tournament";
@@ -98,7 +97,7 @@ pub fn create_game_ix(
     let escrow_pda =
         Pubkey::find_program_address(&[WAGER_ESCROW_SEED, &game_id.to_le_bytes()], &program_id).0;
 
-    let mut data = anchor_discriminator("create_game_v2").to_vec();
+    let mut data = anchor_discriminator("create_game").to_vec();
     data.extend_from_slice(&game_id.to_le_bytes());
     data.extend_from_slice(&wager_amount.to_le_bytes());
     // MatchType Anchor enum: Free=0, Ranked=1, Wager=2
@@ -146,7 +145,7 @@ pub fn join_game_ix(
     let white_profile_pda =
         Pubkey::find_program_address(&[PROFILE_SEED, white_player.as_ref()], &program_id).0;
 
-    let mut data = anchor_discriminator("join_game_v2").to_vec();
+    let mut data = anchor_discriminator("join_game").to_vec();
     data.extend_from_slice(&game_id.to_le_bytes());
 
     Ok(Instruction {
@@ -365,6 +364,88 @@ pub fn accept_draw_ix(program_id: Pubkey, game_id: u64, player: Pubkey) -> Resul
         accounts: vec![
             AccountMeta::new(game_pda, false),
             AccountMeta::new_readonly(player, true),
+        ],
+        data,
+    })
+}
+
+pub fn resign_ix(program_id: Pubkey, game_id: u64, player: Pubkey) -> Result<Instruction> {
+    let game_pda =
+        Pubkey::find_program_address(&[GAME_SEED, &game_id.to_le_bytes()], &program_id).0;
+
+    let mut data = anchor_discriminator("resign").to_vec();
+    data.extend_from_slice(&game_id.to_le_bytes());
+
+    Ok(Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(game_pda, false),
+            AccountMeta::new_readonly(player, true),
+        ],
+        data,
+    })
+}
+
+
+/// A FIDE draw claim (Articles 9.2/9.3). `repetition` selects
+/// `claim_repetition_draw`, otherwise `claim_fifty_move_draw`. `expected_nonce`
+/// is the game nonce the claimant adjudicated against; `claim_nonce` is the
+/// next unused claim nonce. `intended_move` is the irrevocably declared legal
+/// move for a prospective claim; it is never applied by a successful claim.
+/// `session` is `Some((session_key, wallet_player))` when a per-game session
+/// key signs for `wallet_player`; otherwise `claimant` is the player's wallet.
+#[allow(clippy::too_many_arguments)]
+pub fn claim_draw_ix(
+    program_id: Pubkey,
+    game_id: u64,
+    claimant: Pubkey,
+    session: Option<Pubkey>,
+    expected_nonce: u64,
+    claim_nonce: u64,
+    intended_move: Option<[u8; 5]>,
+    repetition: bool,
+) -> Result<Instruction> {
+    let game_pda =
+        Pubkey::find_program_address(&[GAME_SEED, &game_id.to_le_bytes()], &program_id).0;
+    let name = if repetition {
+        "claim_repetition_draw"
+    } else {
+        "claim_fifty_move_draw"
+    };
+    let mut data = anchor_discriminator(name).to_vec();
+    data.extend_from_slice(&game_id.to_le_bytes());
+    data.extend_from_slice(&expected_nonce.to_le_bytes());
+    data.extend_from_slice(&claim_nonce.to_le_bytes());
+    match intended_move {
+        Some(uci) => {
+            data.push(1);
+            data.extend_from_slice(&uci);
+        }
+        None => data.push(0),
+    }
+    // Anchor encodes an absent optional account as the program id.
+    let session_account = match session {
+        Some(wallet_player) => AccountMeta::new_readonly(
+            Pubkey::find_program_address(
+                &[
+                    b"session_delegation",
+                    &game_id.to_le_bytes(),
+                    wallet_player.as_ref(),
+                ],
+                &program_id,
+            )
+            .0,
+            false,
+        ),
+        None => AccountMeta::new_readonly(program_id, false),
+    };
+    Ok(Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(game_pda, false),
+            AccountMeta::new_readonly(claimant, true),
+            session_account,
+            AccountMeta::new_readonly(program_id, false),
         ],
         data,
     })
@@ -990,85 +1071,6 @@ pub fn get_program_id() -> Result<Pubkey> {
         .map_err(|e| anyhow::anyhow!("Invalid program ID: {}", e))
 }
 
-// Sort the two wallets before deriving the Friendship PDA so both sides
-// address the same account.
-
-fn friendship_pair(a: Pubkey, b: Pubkey, program_id: &Pubkey) -> (Pubkey, Pubkey, Pubkey) {
-    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-    let pda =
-        Pubkey::find_program_address(&[FRIENDSHIP_SEED, lo.as_ref(), hi.as_ref()], program_id).0;
-    (lo, hi, pda)
-}
-
-pub fn send_friend_request_ix(
-    program_id: Pubkey,
-    requester: Pubkey,
-    other: Pubkey,
-) -> Result<Instruction> {
-    let (lo, hi, friendship) = friendship_pair(requester, other, &program_id);
-    Ok(Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(friendship, false),
-            AccountMeta::new_readonly(lo, false),
-            AccountMeta::new_readonly(hi, false),
-            AccountMeta::new(requester, true),
-            AccountMeta::new_readonly(system_program::id(), false),
-        ],
-        data: anchor_discriminator("send_friend_request").to_vec(),
-    })
-}
-
-pub fn accept_friend_request_ix(
-    program_id: Pubkey,
-    addressee: Pubkey,
-    other: Pubkey,
-) -> Result<Instruction> {
-    let (lo, hi, friendship) = friendship_pair(addressee, other, &program_id);
-    Ok(Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(friendship, false),
-            AccountMeta::new_readonly(lo, false),
-            AccountMeta::new_readonly(hi, false),
-            AccountMeta::new_readonly(addressee, true),
-        ],
-        data: anchor_discriminator("accept_friend_request").to_vec(),
-    })
-}
-
-pub fn close_friendship_ix(
-    program_id: Pubkey,
-    signer: Pubkey,
-    other: Pubkey,
-) -> Result<Instruction> {
-    let (lo, hi, friendship) = friendship_pair(signer, other, &program_id);
-    Ok(Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(friendship, false),
-            AccountMeta::new_readonly(lo, false),
-            AccountMeta::new_readonly(hi, false),
-            AccountMeta::new(signer, true),
-        ],
-        data: anchor_discriminator("close_friendship").to_vec(),
-    })
-}
-
-pub fn block_user_ix(program_id: Pubkey, signer: Pubkey, other: Pubkey) -> Result<Instruction> {
-    let (lo, hi, friendship) = friendship_pair(signer, other, &program_id);
-    Ok(Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(friendship, false),
-            AccountMeta::new_readonly(lo, false),
-            AccountMeta::new_readonly(hi, false),
-            AccountMeta::new_readonly(signer, true),
-        ],
-        data: anchor_discriminator("block_user").to_vec(),
-    })
-}
-
 #[cfg(test)]
 mod withdraw_expired_layout_tests {
     use super::*;
@@ -1111,5 +1113,75 @@ mod withdraw_expired_layout_tests {
         assert_eq!(keys(&ix.accounts), keys(&expected));
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod game_action_layout_tests {
+    use super::*;
+    use anchor_lang::{InstructionData, ToAccountMetas};
+
+    fn keys(metas: &[AccountMeta]) -> Vec<(Pubkey, bool, bool)> {
+        metas
+            .iter()
+            .map(|a| (a.pubkey, a.is_signer, a.is_writable))
+            .collect()
+    }
+
+    #[test]
+    fn resign_matches_the_program_encoding_and_account_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let program_id: Pubkey = PROGRAM_ID.parse()?;
+        let player = Pubkey::new_unique();
+        let ix = resign_ix(program_id, player_game(), player)?;
+        assert_eq!(
+            ix.data,
+            xfchess_game::instruction::Resign {
+                game_id: player_game()
+            }
+            .data()
+        );
+        let expected = xfchess_game::accounts::ResignGame {
+            game: ix.accounts[0].pubkey,
+            player,
+        }
+        .to_account_metas(None);
+        assert_eq!(keys(&ix.accounts), keys(&expected));
+        Ok(())
+    }
+
+    #[test]
+    fn draw_offer_and_acceptance_match_the_program_encoding(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let program_id: Pubkey = PROGRAM_ID.parse()?;
+        let player = Pubkey::new_unique();
+        let offer = offer_draw_ix(program_id, player_game(), player)?;
+        assert_eq!(
+            offer.data,
+            xfchess_game::instruction::OfferDraw {
+                game_id: player_game()
+            }
+            .data()
+        );
+        let accept = accept_draw_ix(program_id, player_game(), player)?;
+        assert_eq!(
+            accept.data,
+            xfchess_game::instruction::AcceptDraw {
+                game_id: player_game()
+            }
+            .data()
+        );
+        let expected = xfchess_game::accounts::OfferDraw {
+            game: offer.accounts[0].pubkey,
+            player,
+        }
+        .to_account_metas(None);
+        assert_eq!(keys(&offer.accounts), keys(&expected));
+        assert_eq!(keys(&accept.accounts), keys(&expected));
+        Ok(())
+    }
+
+    fn player_game() -> u64 {
+        4242
     }
 }

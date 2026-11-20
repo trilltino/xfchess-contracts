@@ -287,7 +287,7 @@ impl CompactBoard {
 ///
 /// All fields are plain integers — no `Vec`, no `Box`, no `Arc`.
 /// Bitboards are `u64` rather than the engine's `BitSet` wrapper.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct OnChainGame {
     pub board: [i8; 64],
 

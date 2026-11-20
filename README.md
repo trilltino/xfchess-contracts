@@ -1,8 +1,10 @@
 # xfchess-contracts
 
-Standalone extraction of the XFChess Solana program. Source of truth: [trilltino/XFChess](https://github.com/trilltino/XFChess), release source commit `fb168600806aca161ff423610bc9a6457476b494` ([PR #52](https://github.com/trilltino/XFChess/pull/52)). The extraction includes the approved recovery identity schema, versioned account/client transition, security regressions and current direct dependencies.
+Standalone extraction of the XFChess Solana program. Source of truth: [trilltino/XFChess](https://github.com/trilltino/XFChess), source commit `ca1eec71001392effe569da73e7cdc82db59c0d6`. `programs/`, `crates/nimzovich_engine`, `crates/xfchess-rules`, `crates/xfchess-adjudication`, `crates/xfchess-client-compat` and `clients/rust/instructions.rs` are byte-identical to that commit (XFChess keeps the chess crates under `crates/chess/` and the compat crate under `crates/solana/`).
 
-Anchor/SPL 1.2.1, ER SDK 0.17.3, Solana Program 5.1.0, SDK 5.0.0 and Agave test/RPC 4.3.2. Program ID on devnet/localnet: `8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU`. Default features: `cranks`, `move-validation`, `devnet`.
+Since the 2026-10-25 release the program has a fresh program ID, the legacy instructions are gone and every former `*_v2` instruction carries the plain name, the on-chain friends graph moved to the backend, Elo is integer fixed-point with variable K, and FIDE draw claims (`claim_fifty_move_draw`, `claim_repetition_draw`) were added. `PlayerProfile` and `Game` layouts are not compatible with accounts created by the old program.
+
+Anchor/SPL 1.2.1, ER SDK 0.17.3, Solana Program 5.1.0, SDK 5.0.0 and Agave test/RPC 4.3.2. Program ID on devnet/localnet: `6idpQeH5YzXUT4sg8mG8dzxdK7ytmxfEyWkzUcNJJv4N` (the previous devnet program `8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU` is retired and left untouched). Default features: `cranks`, `move-validation`, `devnet`. The opt-in `devnet-reset` feature adds `admin_close_account` and refuses to compile with `mainnet`.
 
 The strict all-transitive-latest requirement remains blocked by upstream constraints and the noncompiling published bincode 3.0.0. Findings, advisories and verification limits are recorded in [the verification record](docs/security/verification-20261024.md). Mainnet placeholders intentionally fail production compilation. This repository is not an independent security sign-off.
 
@@ -12,9 +14,10 @@ The strict all-transitive-latest requirement remains blocked by upstream constra
 | programs/xfchess-game-sbf | Deployable cdylib shim using the same source |
 | crates/nimzovich_engine | Local no_std engine matching XFChess's pinned source; latest Shakmaty test API migrated here |
 | crates/xfchess-rules | Host legality and PGN rules |
+| crates/xfchess-adjudication | Allocation-free FIDE adjudication (clock, repetition, draw claims) shared by the program, engine and rules |
 | crates/xfchess-client-compat | Current SDK/Agave transaction and account boundary |
 | clients/rust/instructions.rs | Exact versioned Rust instruction builder used by client-layout fixtures |
-| idl/xfchess_game.json | Regenerated safety-linted IDL, 82 instructions |
+| idl/xfchess_game.json | Regenerated IDL, 71 instructions (default features; `admin_close_account` is `devnet-reset` only) |
 | docs/security | XFChess-source review evidence, dependency inventory and deployment provenance |
 
 Build with cargo-build-sbf 4.5.0 and cached/downloaded platform-tools v1.58:

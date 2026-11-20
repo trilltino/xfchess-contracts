@@ -4,7 +4,9 @@ use shakmaty::{
     Position,
 };
 
+mod adjudication;
 mod pgn;
+pub use adjudication::*;
 pub use pgn::*;
 
 pub const STARTING_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -14,9 +16,6 @@ pub const BISHOP_ID: i8 = 3;
 pub const ROOK_ID: i8 = 4;
 pub const QUEEN_ID: i8 = 5;
 pub const KING_ID: i8 = 6;
-/// Halfmoves without a capture or pawn move after which the contract ends the
-/// game as a draw (the fifty-move rule, applied automatically).
-pub const FIFTY_MOVE_HALFMOVES: u32 = 100;
 
 /// A small, cloneable rules position. Squares use a1=0 and h8=63.
 #[derive(Clone, Debug)]
@@ -94,8 +93,8 @@ impl Game {
         }
         false
     }
-    /// Halfmoves since the last capture or pawn move. The contract draws the
-    /// game once this reaches [`FIFTY_MOVE_HALFMOVES`].
+    /// Halfmoves since the last capture or pawn move. Reaching 100 only makes a
+    /// fifty-move claim available; 150 ends the game automatically.
     pub fn halfmove_clock(&self) -> u32 {
         self.position.halfmoves()
     }
@@ -134,6 +133,26 @@ impl Game {
             .to_move(&self.position)
             .map_err(|e| format!("Illegal SAN: {e}"))?;
         Ok(UciMove::from_move(mv, CastlingMode::Standard).to_string())
+    }
+    /// The canonical FIDE position identity (pieces, side, castling, legal EP).
+    pub fn position_key(&self) -> Result<xfchess_adjudication::PositionKey, String> {
+        xfchess_adjudication::PositionKey::from_shakmaty(&self.position)
+            .map_err(|e| format!("position key: {e:?}"))
+    }
+    /// The position after a legal `uci` move without changing `self`, and whether
+    /// that move was a pawn move or capture (resets the reversible window).
+    pub fn preview_uci(&self, uci: &str) -> Result<(Game, bool), String> {
+        let mv = self.resolve_uci(uci)?;
+        let resets = mv.is_capture() || mv.role() == shakmaty::Role::Pawn;
+        let mut next = self.clone();
+        next.play_uci(uci)?;
+        Ok((next, resets))
+    }
+    /// Material-sound test of whether `attacker` could ever checkmate. False only
+    /// when no legal sequence can; exotic blocked positions stay true.
+    pub fn can_possibly_mate(&self, attacker_white: bool) -> bool {
+        let colour = if attacker_white { Color::White } else { Color::Black };
+        !self.position.has_insufficient_material(colour)
     }
     pub fn play_uci(&mut self, uci: &str) -> Result<(), String> {
         let mv = self.resolve_uci(uci)?;
@@ -327,7 +346,7 @@ mod tests {
         assert_eq!(game.halfmove_clock(), 99);
         let mut next = game.clone();
         next.play_uci("a1a2").map_err(anyhow::Error::msg)?;
-        assert_eq!(next.halfmove_clock(), FIFTY_MOVE_HALFMOVES);
+        assert_eq!(next.halfmove_clock(), u32::from(FIFTY_MOVE_HALFMOVES));
         Ok(())
     }
 }

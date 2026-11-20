@@ -9,6 +9,7 @@ pub mod common;
 
 use anyhow::Context as _;
 
+use crate::agave::{ProgramTest, ProgramTestContext};
 use anchor_lang::{
     solana_program::instruction::AccountMeta, AccountDeserialize, InstructionData, Space,
     ToAccountMetas,
@@ -21,7 +22,6 @@ use anchor_spl::token_2022::{
     },
     ID as TOKEN_2022,
 };
-use crate::agave::{ProgramTest, ProgramTestContext};
 use solana_sdk::{
     instruction::Instruction,
     pubkey::Pubkey,
@@ -91,7 +91,7 @@ fn code(error: GameErrorCode) -> Option<u32> {
 fn profile(player: &Pubkey, blitz: u32) -> PlayerProfile {
     PlayerProfile {
         authority: *player,
-        elo_blitz: f64::from(blitz) * 100.0,
+        elo_blitz: blitz * 100,
         is_verified: true,
         ..Default::default()
     }

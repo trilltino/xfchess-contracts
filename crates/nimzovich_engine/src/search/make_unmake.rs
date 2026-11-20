@@ -5,8 +5,28 @@
 
 use crate::board::update_bitboards;
 use crate::constants::*;
-use crate::hash::{toggle_turn, update_hash};
+use crate::hash::{rule_state_hash, toggle_turn, update_hash};
 use crate::types::*;
+
+/// A search null move is not a played move and adds no repetition-history
+/// entry. The opponent cannot capture en passant after the skipped turn.
+pub(crate) fn make_null_move(game: &mut Game) -> Option<i8> {
+    let old_ep = game.en_passant_target;
+    game.current_hash ^= rule_state_hash(game);
+    game.en_passant_target = None;
+    game.move_counter += 1;
+    game.current_hash ^= rule_state_hash(game);
+    toggle_turn(game);
+    old_ep
+}
+
+pub(crate) fn unmake_null_move(game: &mut Game, old_ep: Option<i8>) {
+    toggle_turn(game);
+    game.current_hash ^= rule_state_hash(game);
+    game.en_passant_target = old_ep;
+    game.move_counter -= 1;
+    game.current_hash ^= rule_state_hash(game);
+}
 
 /// Information needed to fully undo a move during search
 pub(crate) struct UndoInfo {
@@ -20,6 +40,7 @@ pub(crate) struct UndoInfo {
 /// Make a move on the board (returns undo information).
 /// Handles special moves: Castling, En Passant, and Promotion.
 pub(crate) fn make_move(game: &mut Game, mv: KK) -> UndoInfo {
+    game.current_hash ^= rule_state_hash(game);
     let src = mv.src as usize;
     let dst = mv.dst as usize;
     let moving_piece = game.board[src];
@@ -128,6 +149,7 @@ pub(crate) fn make_move(game: &mut Game, mv: KK) -> UndoInfo {
     update_hash(game, dst, final_piece);
     update_bitboards(game, dst, final_piece);
     toggle_turn(game);
+    game.current_hash ^= rule_state_hash(game);
 
     // Halfmove clock: reset on pawn moves and captures (incl. en passant via
     // the reassigned `captured_piece`), otherwise increment.
@@ -145,6 +167,7 @@ pub(crate) fn make_move(game: &mut Game, mv: KK) -> UndoInfo {
 
 /// Unmake a move on the board.
 pub(crate) fn unmake_move(game: &mut Game, mv: KK, undo: UndoInfo) {
+    game.current_hash ^= rule_state_hash(game);
     let src = mv.src as usize;
     let dst = mv.dst as usize;
     let color = if undo.from_square_piece > 0 { 1 } else { -1 };
@@ -213,4 +236,5 @@ pub(crate) fn unmake_move(game: &mut Game, mv: KK, undo: UndoInfo) {
     game.black_rook_56_has_moved = undo.flags[4];
     game.black_rook_63_has_moved = undo.flags[5];
     game.move_counter -= 1;
+    game.current_hash ^= rule_state_hash(game);
 }

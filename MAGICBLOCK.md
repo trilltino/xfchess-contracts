@@ -309,7 +309,7 @@ SOLANA_RPC_URL=https://api.devnet.solana.com
 SOLANA_RPC_FALLBACK_URL=https://api.devnet.solana.com
 ER_RPC_URL=https://devnet-eu.magicblock.app/
 MAGIC_ROUTER_RPC_URL=https://devnet-router.magicblock.app
-PROGRAM_ID=8tevgspityTTG45KvvRtWV4GZ2kuGDBYWMXouFGquyDU
+PROGRAM_ID=6idpQeH5YzXUT4sg8mG8dzxdK7ytmxfEyWkzUcNJJv4N
 ```
 
 `MAGIC_ROUTER_RPC_URL` and `MAGIC_ROUTER_URL` are optional overrides. If neither is set, the backend defaults `magic_router_rpc_url` to MagicBlock's devnet router (`https://devnet-router.magicblock.app`) — not to `ER_RPC_URL`.
